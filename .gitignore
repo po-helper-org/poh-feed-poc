@@ -1,0 +1,7 @@
+gotosocial/data/
+bridge/.venv/
+bridge/*.egg-info/
+__pycache__/
+*.db
+.env
+.superpowers/
