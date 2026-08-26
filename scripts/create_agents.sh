@@ -4,7 +4,17 @@
 set -euo pipefail
 CT=poh-feed
 CFG=/gotosocial/config.yaml
-PASS='PoC-feed-2026!'
+
+# Существующие на этом стенде аккаунты уже заведены с паролем
+# PoC-feed-2026! — при повторном запуске (пересоздании стенда) задайте
+# именно его, если не меняли пароль сознательно.
+if [ -z "${FEED_ACCOUNT_PASSWORD:-}" ]; then
+  echo "ОШИБКА: переменная окружения FEED_ACCOUNT_PASSWORD не задана." >&2
+  echo "Задайте её и запустите скрипт снова, например:" >&2
+  echo "  FEED_ACCOUNT_PASSWORD='...' ./scripts/create_agents.sh" >&2
+  exit 1
+fi
+PASS="$FEED_ACCOUNT_PASSWORD"
 
 for a in issue_agent openhands pr_agent howtodemo delivery harness aleks; do
   docker exec "$CT" /gotosocial/gotosocial --config-path "$CFG" admin account create \

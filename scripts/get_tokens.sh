@@ -18,10 +18,27 @@
 # cookie jar, а не то, что проверяет сам сервер: он смотрит на значение
 # куки. Поэтому кука пересылается вручную заголовком Cookie напрямую на
 # http://127.0.0.1:8080, без похода через Caddy/TLS.
+#
+# .env сливается, а не перезаписывается целиком: строки FEED_TOKEN_*
+# обновляются, всё остальное содержимое .env (например, будущий
+# GITHUB_TOKEN) сохраняется как есть. Если для какого-то агента токен
+# получить не удалось, прежнее значение его переменной в .env не трогается.
 set -euo pipefail
 BASE=http://127.0.0.1:8080
-PASS='PoC-feed-2026!'
 ENV_FILE=.env
+
+# Существующие на этом стенде аккаунты заведены с паролем PoC-feed-2026! —
+# подставляйте его, если не меняли сознательно.
+if [ -z "${FEED_ACCOUNT_PASSWORD:-}" ]; then
+  echo "ОШИБКА: переменная окружения FEED_ACCOUNT_PASSWORD не задана." >&2
+  echo "Задайте её и запустите скрипт снова, например:" >&2
+  echo "  FEED_ACCOUNT_PASSWORD='...' ./scripts/get_tokens.sh" >&2
+  exit 1
+fi
+PASS="$FEED_ACCOUNT_PASSWORD"
+
+NEW_TOKENS_FILE=$(mktemp)
+trap 'rm -f "$NEW_TOKENS_FILE"' EXIT
 
 extract_cookie() {
   # Достаёт "имя=значение" из строки Set-Cookie (без учёта Domain/Secure/etc).
@@ -37,7 +54,7 @@ CID=$(echo "$APP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["clie
 CSEC=$(echo "$APP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["client_secret"])')
 echo "client_id=$CID"
 
-> "$ENV_FILE.tmp"
+OBTAINED=""
 
 for a in issue_agent openhands pr_agent howtodemo delivery harness; do
   echo "== Токен для $a =="
@@ -69,17 +86,82 @@ for a in issue_agent openhands pr_agent howtodemo delivery harness; do
     continue
   fi
 
-  # 5) обмен кода на токен
+  # 5) обмен кода на токен. Отказ (invalid_grant и т.п.) должен обрывать
+  # только эту итерацию, а не весь скрипт — поэтому команда-подстановка
+  # стоит в условии if, а не в самостоятельном присваивании (под
+  # set -e самостоятельное VAR=$(cmd) с ненулевым кодом завершило бы
+  # весь скрипт).
   TOKRESP=$(curl -sS -X POST "$BASE/oauth/token" \
     -d grant_type=authorization_code -d code="$CODE" \
     -d client_id="$CID" -d client_secret="$CSEC" \
     -d redirect_uri='urn:ietf:wg:oauth:2.0:oob')
-  TOK=$(echo "$TOKRESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+  if ! TOK=$(echo "$TOKRESP" | python3 -c 'import sys,json
+print(json.load(sys.stdin)["access_token"])' 2>/dev/null); then
+    echo "ОШИБКА: обмен кода на токен для $a не удался. Ответ сервера: $TOKRESP" >&2
+    continue
+  fi
+
   VAR="FEED_TOKEN_$(echo "$a" | tr 'a-z' 'A-Z')"
-  echo "${VAR}=${TOK}" >> "$ENV_FILE.tmp"
+  echo "${VAR}=${TOK}" >> "$NEW_TOKENS_FILE"
+  OBTAINED="$OBTAINED $VAR"
   echo "OK: $VAR получен"
 done
 
+# Слияние: строки FEED_TOKEN_* из NEW_TOKENS_FILE обновляют одноимённые
+# строки в существующем .env (если есть), остальное содержимое .env
+# сохраняется как есть; переменные, которых раньше не было, дописываются
+# в конец. Если .env ещё не существует, создаётся заново только из
+# полученных токенов.
+python3 - "$ENV_FILE" "$NEW_TOKENS_FILE" <<'PY'
+import sys
+
+env_file, new_file = sys.argv[1], sys.argv[2]
+
+def var_name(line):
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in line:
+        return None
+    return line.split("=", 1)[0]
+
+new_vars = {}
+with open(new_file) as f:
+    for line in f:
+        line = line.rstrip("\n")
+        if not line or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        new_vars[k] = v
+
+try:
+    with open(env_file) as f:
+        existing_lines = f.readlines()
+except FileNotFoundError:
+    existing_lines = []
+
+consumed = set()
+out_lines = []
+for line in existing_lines:
+    if not line.endswith("\n"):
+        line += "\n"
+    name = var_name(line)
+    if name is not None and name in new_vars:
+        out_lines.append(f"{name}={new_vars[name]}\n")
+        consumed.add(name)
+    else:
+        out_lines.append(line)
+
+for name, value in new_vars.items():
+    if name not in consumed:
+        out_lines.append(f"{name}={value}\n")
+
+with open(env_file + ".tmp", "w") as f:
+    f.writelines(out_lines)
+PY
 mv "$ENV_FILE.tmp" "$ENV_FILE"
+
 echo "== Готово =="
-cat "$ENV_FILE"
+if [ -n "$OBTAINED" ]; then
+  echo "Обновлены переменные:$OBTAINED"
+else
+  echo "Ни один токен не получен — .env не изменён по составу переменных."
+fi
