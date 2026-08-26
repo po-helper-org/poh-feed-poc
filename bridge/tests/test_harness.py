@@ -273,6 +273,22 @@ class RaisingGithubClient:
         return RaisingRepo()
 
 
+class PartlyRaisingGithubClient:
+    """get_repo(name) отдаёт нормальный подставной репозиторий для всех
+    имён, кроме перечисленных в `fail_repos` — для них `get_issues()`
+    бросает исключение. Нужен, чтобы отличить отказ ОДНОГО репозитория от
+    отказа обхода целиком."""
+
+    def __init__(self, repos: dict, fail_repos=None):
+        self._repos = repos
+        self._fail_repos = fail_repos or set()
+
+    def get_repo(self, name):
+        if name in self._fail_repos:
+            return RaisingRepo()
+        return self._repos[name]
+
+
 def test_github_labels_failure_wrapped_with_context():
     gh = GitHub("token", client=RaisingGithubClient())
     with pytest.raises(RuntimeError, match=r"o/r#149") as excinfo:
@@ -301,11 +317,29 @@ def test_github_remove_label_failure_wrapped_with_context():
     assert "сеть легла" in str(excinfo.value.__cause__)
 
 
-def test_github_parked_failure_wrapped_with_context():
-    gh = GitHub("token", client=RaisingGithubClient())
-    with pytest.raises(RuntimeError, match="o/r") as excinfo:
-        gh.parked(["o/r"])
-    assert "сеть легла" in str(excinfo.value.__cause__)
+def test_github_parked_repo_failure_is_recorded_not_raised_and_does_not_block_rest():
+    """Находка повторного ревью (тонкость 1, симметрично `pump_github`):
+    раньше отказ `get_issues()` для одного репозитория поднимался наверх и
+    обрывал внешний `for repo in repos` целиком — репозитории после
+    сломанного не обрабатывались вовсе. Это буквальное повторение беды
+    обслуживаемого контура (171 падение подряд из-за одного недоступного
+    репозитория). Теперь отказ репозитория ловится поштучно и записывается
+    в `problems` с номером задачи 0 (репозиторий недоступен целиком —
+    номера конкретной задачи нет), а обход продолжается."""
+    healthy = FakeRepo([
+        FakeIssue(151, "Здоровая", ["needs-human:triage", "phase:classified"]),
+    ])
+    client = PartlyRaisingGithubClient({"o/healthy": healthy}, fail_repos={"o/broken"})
+    gh = GitHub("token", client=client)
+    problems: list[tuple[int, str]] = []
+
+    result = gh.parked(["o/broken", "o/healthy"], problems)
+
+    assert result == [Parked(repo="o/healthy", issue=151, title="Здоровая", phase="classified")]
+    assert len(problems) == 1
+    number, reason = problems[0]
+    assert number == 0, "у отказа репозитория нет номера конкретной задачи — используется 0"
+    assert "o/broken" in reason and "сеть легла" in reason
 
 
 def test_github_recent_issues_failure_wrapped_with_context():

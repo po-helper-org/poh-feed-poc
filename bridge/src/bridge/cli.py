@@ -23,9 +23,10 @@ def main() -> int:
         # прятать проблемы, накопленные другими, и не должен мешать им
         # отработать в этом же проходе.
         try:
-            # У pump_decisions уже есть поштучный try/except внутри — сюда
-            # попадает только непредвиденный отказ самого цикла (например,
-            # github.parked() из-за недоступного репозитория).
+            # У pump_decisions уже есть поштучный try/except внутри, а у
+            # github.parked() — свой, по репозиториям (см. docstring
+            # GitHub.parked). Сюда попадает только непредвиденный отказ
+            # самого цикла помимо этого.
             made = pump_decisions(
                 feed, mapping, lambda: github.parked(settings.repos, problems), problems
             )
@@ -40,10 +41,11 @@ def main() -> int:
             print(f"голоса: обход не удался: {error}", file=sys.stderr)
 
         try:
-            # У pump_github уже есть поштучный try/except внутри — сюда
-            # попадает только непредвиденный отказ самого цикла (например,
-            # github.recent_issues() из-за недоступного репозитория, см.
-            # docstring pump_github).
+            # У pump_github уже есть поштучный try/except внутри — как по
+            # задачам, так и по репозиториям (github.recent_issues() из-за
+            # недоступного репозитория теперь тоже ловится там, см.
+            # docstring pump_github). Сюда попадает только непредвиденный
+            # отказ самого цикла помимо этого.
             seen = pump_github(feed, mapping, github, settings.repos, problems)
         except Exception as error:
             print(f"события GitHub: обход не удался: {error}", file=sys.stderr)

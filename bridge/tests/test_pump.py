@@ -1,5 +1,3 @@
-import pytest
-
 from bridge.harness import Parked
 from bridge.mapping import Mapping
 from bridge.pump import pump_cleanup, pump_decisions, pump_github, pump_votes
@@ -623,24 +621,34 @@ def test_retry_after_publish_failure_succeeds_without_losing_the_event(tmp_path)
     m.close()
 
 
-def test_unreadable_repo_does_not_silently_drop_events_it_raises(tmp_path):
-    """Отказ `github.recent_issues(repo)` целиком (репозиторий недоступен) не
-    ловится внутри `pump_github` — он уходит наверх, как и у
-    `GitHub.parked()` для `pump_decisions`; `cli.py` перехватывает его на
-    уровне обхода и печатает причину. Проверяем, что это не тихое
-    поглощение: событие не помечается как обработанное."""
+def test_broken_repo_does_not_block_the_rest_and_is_named_in_problems(tmp_path):
+    """Находка повторного ревью (тонкость 1): раньше отказ
+    `github.recent_issues(repo)` для одного репозитория поднимался наверх и
+    обрывал ВНЕШНИЙ `for repo in repos` целиком — репозитории после
+    сломанного не обрабатывались вовсе, ни в этом обходе, ни в последующих,
+    пока первый не починится. Это буквальное повторение беды
+    обслуживаемого контура (171 падение подряд из-за одного недоступного
+    репозитория), а не гипотетический риск. Теперь отказ репозитория
+    ловится поштучно, как и отказ отдельной задачи, и записывается в
+    `problems` с номером задачи 0 (репозиторий недоступен целиком — номера
+    конкретной задачи нет)."""
     m = Mapping(tmp_path / "m.db")
     gh = FailingRepoGitHub(
         per_repo={REPO: [
-            {"number": 149, "title": "Промокод", "state": "open",
-             "updated": "2026-08-25T09:14:00"},
+            {"number": 151, "title": "Здоровая", "state": "open",
+             "updated": "2026-08-25T09:15:00"},
         ]},
         fail_repos={"another-org/another-repo"},
     )
     feed = FakeFeed()
+    problems: list[tuple[int, str]] = []
 
-    with pytest.raises(RuntimeError):
-        pump_github(feed, m, gh, ["another-org/another-repo", REPO])
+    made = pump_github(feed, m, gh, ["another-org/another-repo", REPO], problems)
 
-    assert feed.posts == [], "порядок репозиториев: сломанный обработан первым, здоровый не достигнут"
+    assert made == 1, "здоровый репозиторий обязан быть обработан, несмотря на сломанный первым"
+    assert "Здоровая" in feed.posts[0][1]
+    assert len(problems) == 1
+    number, reason = problems[0]
+    assert number == 0, "у отказа репозитория нет номера конкретной задачи — используется 0"
+    assert "another-org/another-repo" in reason
     m.close()
