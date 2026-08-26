@@ -5,7 +5,7 @@ from bridge.config import Settings
 from bridge.feed import Feed
 from bridge.harness import GitHub
 from bridge.mapping import Mapping
-from bridge.pump import pump_cleanup, pump_decisions, pump_votes
+from bridge.pump import pump_cleanup, pump_decisions, pump_github, pump_votes
 
 
 def main() -> int:
@@ -17,9 +17,9 @@ def main() -> int:
     once = "--once" in sys.argv
     while True:
         problems: list[tuple[int, str]] = []
-        made = sent = cleaned = 0
+        made = sent = cleaned = seen = 0
 
-        # Каждый из трёх циклов обёрнут отдельно: отказ одного не должен
+        # Каждый из четырёх циклов обёрнут отдельно: отказ одного не должен
         # прятать проблемы, накопленные другими, и не должен мешать им
         # отработать в этом же проходе.
         try:
@@ -40,6 +40,15 @@ def main() -> int:
             print(f"голоса: обход не удался: {error}", file=sys.stderr)
 
         try:
+            # У pump_github уже есть поштучный try/except внутри — сюда
+            # попадает только непредвиденный отказ самого цикла (например,
+            # github.recent_issues() из-за недоступного репозитория, см.
+            # docstring pump_github).
+            seen = pump_github(feed, mapping, github, settings.repos, problems)
+        except Exception as error:
+            print(f"события GitHub: обход не удался: {error}", file=sys.stderr)
+
+        try:
             touched = [
                 (link.repo, link.issue) for link in mapping.open_polls()
             ] + mapping.decided_uncleaned()
@@ -49,11 +58,14 @@ def main() -> int:
         except Exception as error:
             print(f"уборка: обход не удался: {error}", file=sys.stderr)
 
-        if made or sent or cleaned:
-            print(f"развилок: {made}, решений: {sent}, снято меток: {cleaned}")
+        if made or sent or seen or cleaned:
+            print(
+                f"развилок: {made}, решений: {sent}, "
+                f"событий GitHub: {seen}, снято меток: {cleaned}"
+            )
         # Задачи, которые разобрать не удалось, обязаны быть названы:
         # молча пропущенная развилка — это работа, стоящая без причины.
-        # Печатаем после всех трёх циклов и даже если один из них отказал —
+        # Печатаем после всех четырёх циклов и даже если один из них отказал —
         # иначе причины, накопленные уже отработавшими циклами, терялись бы
         # вместе с отказавшим.
         for number, reason in problems:

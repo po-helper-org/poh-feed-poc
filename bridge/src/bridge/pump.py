@@ -152,6 +152,73 @@ def pump_votes(feed, mapping: Mapping, github, problems: list[tuple[int, str]] |
     return sent
 
 
+def pump_github(
+    feed, mapping: Mapping, github, repos,
+    problems: list[tuple[int, str]] | None = None,
+) -> int:
+    """Новая задача открывает ветку постом; изменение состояния отвечает в
+    ту же ветку. Смысл — «одна задача = одна ветка», а не россыпь отдельных
+    постов об одной и той же задаче.
+
+    Ключ идемпотентности включает время обновления задачи
+    (`issue['updated']`): без этого одно и то же состояние (например,
+    «issue ещё открыт») публиковалось бы заново на каждом обходе, хотя
+    ничего не изменилось.
+
+    Отметку «сделано» ставим ДО публикации, а не после — симметрично
+    `pump_decisions`. Пост в ленте не идемпотентен (это не GitHub-метка,
+    повтор создаёт вторую видимую запись), поэтому при отказе публикации
+    отметку снимаем: следующий обход (через 5 секунд) попробует снова.
+    Так потерянное событие невозможно: либо оно опубликовано и учтено,
+    либо отметка снята и попытка повторится.
+
+    Отказ по одной задаче не должен останавливать разбор остальных — так
+    контур, который мы обслуживаем, однажды уронил весь обход из-за одного
+    недоступного репозитория (171 падение подряд); переносить эту беду сюда
+    нельзя. Причина отказа, если передан `problems`, уходит в него вместе с
+    номером задачи — симметрично `pump_decisions`/`pump_votes`/`pump_cleanup`.
+
+    Сам вызов `github.recent_issues(repo)` здесь не ловится и уходит
+    наверх, если репозиторий целиком недоступен — так же, как
+    `GitHub.parked()` устроен для `pump_decisions`: такой отказ считается
+    отказом всего обхода этого цикла (см. обёртку в `cli.py`), а не отказом
+    одной задачи, и следующий обход через 5 секунд пробует заново.
+    """
+    made = 0
+    for repo in repos:
+        for issue in github.recent_issues(repo):
+            number = int(issue["number"])
+            key = f"gh:{repo}:{number}:{issue['updated']}"
+            if mapping.seen(key):
+                continue
+
+            mapping.mark_seen(key)
+            try:
+                parent = mapping.thread_for(repo, number)
+                if parent is None:
+                    text = (
+                        f"{issue['title']}\n\n{repo.split('/')[-1]} · #{number}"
+                    )
+                    status_id = feed.post("issue_agent", text)
+                    mapping.remember_thread(repo, number, status_id)
+                else:
+                    feed.post(
+                        "issue_agent",
+                        f"Состояние задачи: {issue['state']}.",
+                        in_reply_to=parent,
+                    )
+            except Exception as error:
+                mapping.forget_seen(key)
+                if problems is not None:
+                    problems.append((
+                        number,
+                        f"событие GitHub {repo}#{number}: публикация не удалась: {error}",
+                    ))
+                continue
+            made += 1
+    return made
+
+
 def pump_cleanup(
     github,
     read_touched,

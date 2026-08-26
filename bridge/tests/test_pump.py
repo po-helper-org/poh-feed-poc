@@ -1,6 +1,8 @@
+import pytest
+
 from bridge.harness import Parked
 from bridge.mapping import Mapping
-from bridge.pump import pump_cleanup, pump_decisions, pump_votes
+from bridge.pump import pump_cleanup, pump_decisions, pump_github, pump_votes
 from bridge.render import Choice
 
 REPO = "po-helper-org/poh-demo-checkout"
@@ -112,6 +114,45 @@ class OnceFailingFeed(FakeFeed):
             self._fail = False
             raise RuntimeError("обрыв связи")
         return super().post_poll(agent, poll, in_reply_to=in_reply_to)
+
+
+class FakeGitHubIssues(FakeGitHub):
+    def __init__(self, issues):
+        super().__init__()
+        self._issues = issues
+
+    def recent_issues(self, repo, limit=20):
+        return self._issues
+
+
+class FlakyPostFeed(FakeFeed):
+    """feed.post отказывает для конкретного номера задачи — как сломанное
+    событие GitHub, из-за которого раньше падал бы весь обход (симметрично
+    `FlakyPostPollFeed` для `pump_decisions`)."""
+
+    def __init__(self, *a, fail_numbers=None, **kw):
+        super().__init__(*a, **kw)
+        self._fail_numbers = fail_numbers or set()
+
+    def post(self, agent, text, *, spoiler=None, in_reply_to=None):
+        if any(f"#{n}" in text for n in self._fail_numbers):
+            raise RuntimeError("обрыв связи")
+        return super().post(agent, text, spoiler=spoiler, in_reply_to=in_reply_to)
+
+
+class FailingRepoGitHub(FakeGitHub):
+    """recent_issues отказывает для конкретного репозитория целиком — как
+    недоступный репозиторий, уронивший контуру 171 обход подряд."""
+
+    def __init__(self, per_repo, fail_repos=None):
+        super().__init__()
+        self._per_repo = per_repo
+        self._fail_repos = fail_repos or set()
+
+    def recent_issues(self, repo, limit=20):
+        if repo in self._fail_repos:
+            raise RuntimeError(f"github: репозиторий {repo} недоступен")
+        return self._per_repo.get(repo, [])
 
 
 class FlakyMarkSeenMapping:
@@ -458,4 +499,148 @@ def test_pump_cleanup_marks_cleaned_even_when_nothing_to_remove(tmp_path):
     assert pump_cleanup(gh, lambda: m.decided_uncleaned(), m.mark_cleaned) == 0
 
     assert m.decided_uncleaned() == []
+    m.close()
+
+
+# --- Задача 8: события GitHub в ветки --------------------------------------
+
+
+def test_new_issue_opens_thread(tmp_path):
+    feed, m = FakeFeed(), Mapping(tmp_path / "m.db")
+    gh = FakeGitHubIssues([
+        {"number": 149, "title": "Промокод из ссылки", "state": "open",
+         "updated": "2026-08-25T09:14:00"},
+    ])
+    n = pump_github(feed, m, gh, ["po-helper-org/poh-demo-checkout"])
+    assert n == 1
+    assert "Промокод из ссылки" in feed.posts[0][1]
+    assert m.thread_for("po-helper-org/poh-demo-checkout", 149) is not None
+    m.close()
+
+
+def test_same_update_is_not_reposted(tmp_path):
+    feed, m = FakeFeed(), Mapping(tmp_path / "m.db")
+    issues = [{"number": 149, "title": "Промокод", "state": "open",
+               "updated": "2026-08-25T09:14:00"}]
+    gh = FakeGitHubIssues(issues)
+    pump_github(feed, m, gh, ["po-helper-org/poh-demo-checkout"])
+    assert pump_github(feed, m, gh, ["po-helper-org/poh-demo-checkout"]) == 0
+    assert len(feed.posts) == 1
+    m.close()
+
+
+def test_closed_issue_replies_into_existing_thread(tmp_path):
+    feed, m = FakeFeed(), Mapping(tmp_path / "m.db")
+    m.remember_thread("po-helper-org/poh-demo-checkout", 149, "S9")
+    gh = FakeGitHubIssues([
+        {"number": 149, "title": "Промокод", "state": "closed",
+         "updated": "2026-08-25T14:02:00"},
+    ])
+    pump_github(feed, m, gh, ["po-helper-org/poh-demo-checkout"])
+    assert feed.posts[0][2] == "S9", "ответ обязан уйти в существующую ветку"
+    m.close()
+
+
+def test_state_change_reopens_a_new_event_not_the_same_key(tmp_path):
+    """Разное время обновления — разные ключи идемпотентности: закрытие
+    issue после того, как ветка уже открыта, обязано дать новый пост-ответ,
+    а не быть молча проглочено как «уже видели»."""
+    feed, m = FakeFeed(), Mapping(tmp_path / "m.db")
+    gh_open = FakeGitHubIssues([
+        {"number": 149, "title": "Промокод", "state": "open",
+         "updated": "2026-08-25T09:14:00"},
+    ])
+    assert pump_github(feed, m, gh_open, [REPO]) == 1
+
+    gh_closed = FakeGitHubIssues([
+        {"number": 149, "title": "Промокод", "state": "closed",
+         "updated": "2026-08-25T14:02:00"},
+    ])
+    assert pump_github(feed, m, gh_closed, [REPO]) == 1
+    assert len(feed.posts) == 2
+    assert feed.posts[1][2] == m.thread_for(REPO, 149), "ответ обязан уйти в ту же ветку"
+    m.close()
+
+
+def test_broken_issue_publish_does_not_block_the_rest_and_is_named_in_problems(tmp_path):
+    """Находка задачи 7, применённая симметрично к `pump_github`: отказ по
+    одной задаче не должен останавливать разбор остальных (беда контура —
+    171 падение подряд из-за одного недоступного элемента)."""
+    feed = FlakyPostFeed(fail_numbers={149})
+    m = Mapping(tmp_path / "m.db")
+    gh = FakeGitHubIssues([
+        {"number": 149, "title": "Сломанная", "state": "open",
+         "updated": "2026-08-25T09:14:00"},
+        {"number": 151, "title": "Здоровая", "state": "open",
+         "updated": "2026-08-25T09:15:00"},
+    ])
+    problems: list[tuple[int, str]] = []
+
+    made = pump_github(feed, m, gh, [REPO], problems)
+
+    assert made == 1, "здоровое событие обязано быть опубликовано и учтено"
+    assert "Здоровая" in feed.posts[0][1]
+    assert [number for number, _ in problems] == [149]
+    m.close()
+
+
+def test_seen_mark_is_set_before_publish_and_rolled_back_on_github_failure(tmp_path):
+    """Отметка «сделано» обязана стоять уже к моменту публикации (иначе
+    отказ после физической отправки не оставляет следа) и сниматься при
+    отказе — иначе событие потеряно навсегда. Симметрично тесту для
+    `pump_decisions`."""
+    feed = FlakyPostFeed(fail_numbers={149})
+    m = Mapping(tmp_path / "m.db")
+    gh = FakeGitHubIssues([
+        {"number": 149, "title": "Сломанная", "state": "open",
+         "updated": "2026-08-25T09:14:00"},
+    ])
+    key = "gh:po-helper-org/poh-demo-checkout:149:2026-08-25T09:14:00"
+    problems: list[tuple[int, str]] = []
+
+    made = pump_github(feed, m, gh, [REPO], problems)
+
+    assert made == 0
+    assert m.seen(key) is False, "после отказа отметка обязана быть снята"
+    assert [number for number, _ in problems] == [149]
+    m.close()
+
+
+def test_retry_after_publish_failure_succeeds_without_losing_the_event(tmp_path):
+    m = Mapping(tmp_path / "m.db")
+    gh = FakeGitHubIssues([
+        {"number": 149, "title": "Промокод", "state": "open",
+         "updated": "2026-08-25T09:14:00"},
+    ])
+    feed = FlakyPostFeed(fail_numbers={149})
+
+    assert pump_github(feed, m, gh, [REPO]) == 0
+    assert feed.posts == []
+
+    feed2 = FakeFeed()
+    assert pump_github(feed2, m, gh, [REPO]) == 1
+    assert len(feed2.posts) == 1
+    m.close()
+
+
+def test_unreadable_repo_does_not_silently_drop_events_it_raises(tmp_path):
+    """Отказ `github.recent_issues(repo)` целиком (репозиторий недоступен) не
+    ловится внутри `pump_github` — он уходит наверх, как и у
+    `GitHub.parked()` для `pump_decisions`; `cli.py` перехватывает его на
+    уровне обхода и печатает причину. Проверяем, что это не тихое
+    поглощение: событие не помечается как обработанное."""
+    m = Mapping(tmp_path / "m.db")
+    gh = FailingRepoGitHub(
+        per_repo={REPO: [
+            {"number": 149, "title": "Промокод", "state": "open",
+             "updated": "2026-08-25T09:14:00"},
+        ]},
+        fail_repos={"another-org/another-repo"},
+    )
+    feed = FakeFeed()
+
+    with pytest.raises(RuntimeError):
+        pump_github(feed, m, gh, ["another-org/another-repo", REPO])
+
+    assert feed.posts == [], "порядок репозиториев: сломанный обработан первым, здоровый не достигнут"
     m.close()
