@@ -89,9 +89,25 @@ class GitHub:
             from github import Github
 
             self._gh = Github(token)
+        # Итоговый обзор, правка №5: без кэша каждое обращение к задаче
+        # (`_issue`, а через него `labels`/`comment`/`add_label`/
+        # `remove_label`) заново звало `get_repo()` — лишний HTTP-запрос на
+        # КАЖДЫЙ вызов, при том что объект репозитория не меняется между
+        # вызовами в пределах жизни процесса моста. Уборка одна дёргала его
+        # дважды на каждый открытый опрос (`get_repo` + `get_issue`); при
+        # непрерывном обходе это грозило упереться в лимит GitHub 5000/час.
+        # Кэш живёт всё время жизни `GitHub` (мост создаёт его один раз до
+        # цикла в `cli.main`), поэтому `get_repo()` для конкретного
+        # репозитория происходит не «раз за проход», а один раз вообще.
+        self._repos: dict[str, object] = {}
+
+    def _repo(self, repo: str):
+        if repo not in self._repos:
+            self._repos[repo] = self._gh.get_repo(repo)
+        return self._repos[repo]
 
     def _issue(self, repo: str, number: int):
-        return self._gh.get_repo(repo).get_issue(number)
+        return self._repo(repo).get_issue(number)
 
     def labels(self, repo: str, issue: int) -> list[str]:
         try:
@@ -121,7 +137,7 @@ class GitHub:
         for repo in repos:
             try:
                 issues = list(
-                    self._gh.get_repo(repo).get_issues(
+                    self._repo(repo).get_issues(
                         state="open", labels=[NEEDS_HUMAN]
                     )
                 )
@@ -141,7 +157,7 @@ class GitHub:
 
     def recent_issues(self, repo: str, limit: int = 20) -> list[dict]:
         try:
-            issues = self._gh.get_repo(repo).get_issues(state="all", sort="updated")[:limit]
+            issues = self._repo(repo).get_issues(state="all", sort="updated")[:limit]
             out = []
             for issue in issues:
                 out.append({

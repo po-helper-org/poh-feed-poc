@@ -42,7 +42,14 @@ class FakeGitHub:
         self.removed.append((repo, issue, label))
 
     def labels(self, repo, issue):
-        return self._labels.get((repo, issue), [])
+        # По умолчанию (когда тест не задал `labels=` явно) считаем задачу
+        # всё ещё ждущей человека в фазе "classified" — той же, что несут
+        # почти все PARKED/remember_poll в этом файле. Так тесты, написанные
+        # до сверки фазы в pump_votes (правка №2 итогового обзора) и не
+        # заботящиеся о ней, не ломаются мимоходом.
+        return self._labels.get(
+            (repo, issue), ["needs-human:triage", "phase:classified"]
+        )
 
 
 class FlakyVotesFeed(FakeFeed):
@@ -202,7 +209,7 @@ def test_vote_puts_label_and_comments(tmp_path):
     m = Mapping(tmp_path / "m.db")
     m.remember_poll("P1", "S1", REPO, 149, [
         Choice("Разобрать аналитикой", "research-me"), Choice("Это баг", "bug-me"),
-    ])
+    ], phase="classified")
     feed = FakeFeed(votes={"P1": {"Разобрать аналитикой": 1, "Это баг": 0}})
     gh = FakeGitHub()
     assert pump_votes(feed, m, gh) == 1
@@ -217,11 +224,11 @@ def test_vote_puts_label_and_comments(tmp_path):
 def test_label_is_put_once(tmp_path):
     m = Mapping(tmp_path / "m.db")
     choices = [Choice("Разобрать аналитикой", "research-me")]
-    m.remember_poll("P1", "S1", REPO, 149, choices)
+    m.remember_poll("P1", "S1", REPO, 149, choices, phase="classified")
     feed = FakeFeed(votes={"P1": {"Разобрать аналитикой": 1}})
     gh = FakeGitHub()
     pump_votes(feed, m, gh)
-    m.remember_poll("P1", "S1", REPO, 149, choices)  # опрос вернулся
+    m.remember_poll("P1", "S1", REPO, 149, choices, phase="classified")  # опрос вернулся
     pump_votes(feed, m, gh)
     assert len(gh.added) == 1, "повторная доставка не должна ставить метку дважды"
     m.close()
@@ -229,7 +236,7 @@ def test_label_is_put_once(tmp_path):
 
 def test_no_votes_means_no_label(tmp_path):
     m = Mapping(tmp_path / "m.db")
-    m.remember_poll("P1", "S1", REPO, 149, [Choice("Разобрать аналитикой", "research-me")])
+    m.remember_poll("P1", "S1", REPO, 149, [Choice("Разобрать аналитикой", "research-me")], phase="classified")
     feed, gh = FakeFeed(votes={"P1": {"Разобрать аналитикой": 0}}), FakeGitHub()
     assert pump_votes(feed, m, gh) == 0
     assert gh.added == []
@@ -238,7 +245,7 @@ def test_no_votes_means_no_label(tmp_path):
 
 def test_decision_timing_is_recorded(tmp_path):
     m = Mapping(tmp_path / "m.db")
-    m.remember_poll("P1", "S1", REPO, 149, [Choice("Разобрать аналитикой", "research-me")])
+    m.remember_poll("P1", "S1", REPO, 149, [Choice("Разобрать аналитикой", "research-me")], phase="classified")
     m.mark_posted("P1", 1000.0)
     feed = FakeFeed(votes={"P1": {"Разобрать аналитикой": 1}})
     pump_votes(feed, m, FakeGitHub())
@@ -269,7 +276,7 @@ def test_vote_majority_wins_not_first_option(tmp_path):
     m = Mapping(tmp_path / "m.db")
     m.remember_poll("P1", "S1", REPO, 149, [
         Choice("Разобрать аналитикой", "research-me"), Choice("Это баг", "bug-me"),
-    ])
+    ], phase="classified")
     feed = FakeFeed(votes={"P1": {"Разобрать аналитикой": 1, "Это баг": 5}})
     gh = FakeGitHub()
 
@@ -284,7 +291,7 @@ def test_vote_tie_leaves_poll_open_and_acts_on_nothing(tmp_path):
     m = Mapping(tmp_path / "m.db")
     m.remember_poll("P1", "S1", REPO, 149, [
         Choice("Разобрать аналитикой", "research-me"), Choice("Это баг", "bug-me"),
-    ])
+    ], phase="classified")
     feed = FakeFeed(votes={"P1": {"Разобрать аналитикой": 3, "Это баг": 3}})
     gh = FakeGitHub()
 
@@ -300,7 +307,7 @@ def test_vote_tie_is_named_in_problems(tmp_path):
     m = Mapping(tmp_path / "m.db")
     m.remember_poll("P1", "S1", REPO, 149, [
         Choice("Разобрать аналитикой", "research-me"), Choice("Это баг", "bug-me"),
-    ])
+    ], phase="classified")
     feed = FakeFeed(votes={"P1": {"Разобрать аналитикой": 3, "Это баг": 3}})
     problems: list[tuple[int, str]] = []
 
@@ -320,7 +327,7 @@ def test_comment_failure_does_not_lose_already_recorded_label(tmp_path):
             raise RuntimeError("сеть оборвалась")
 
     m = Mapping(tmp_path / "m.db")
-    m.remember_poll("P1", "S1", REPO, 149, [Choice("Разобрать аналитикой", "research-me")])
+    m.remember_poll("P1", "S1", REPO, 149, [Choice("Разобрать аналитикой", "research-me")], phase="classified")
     feed = FakeFeed(votes={"P1": {"Разобрать аналитикой": 1}})
     gh = FailCommentGitHub()
 
@@ -338,7 +345,7 @@ def test_comment_not_duplicated_when_bookkeeping_fails_right_after_it(tmp_path):
     этот опрос уже не видит вовсе."""
     real = Mapping(tmp_path / "m.db")
     choices = [Choice("Разобрать аналитикой", "research-me")]
-    real.remember_poll("P1", "S1", REPO, 149, choices)
+    real.remember_poll("P1", "S1", REPO, 149, choices, phase="classified")
     m = FlakyMarkSeenMapping(real, fail_times=1)
     feed = FakeFeed(votes={"P1": {"Разобрать аналитикой": 1}})
     gh = FakeGitHub()
@@ -356,8 +363,8 @@ def test_broken_poll_does_not_block_the_rest(tmp_path):
     ревьюером как повтор беды контура (171 падение подряд)."""
     m = Mapping(tmp_path / "m.db")
     choices = [Choice("Разобрать аналитикой", "research-me")]
-    m.remember_poll("P1", "S1", REPO, 149, choices)
-    m.remember_poll("P2", "S2", REPO, 151, choices)
+    m.remember_poll("P1", "S1", REPO, 149, choices, phase="classified")
+    m.remember_poll("P2", "S2", REPO, 151, choices, phase="classified")
     feed = FlakyVotesFeed(votes={"P2": {"Разобрать аналитикой": 1}}, fail_polls={"P1"})
     gh = FakeGitHub()
     problems: list[tuple[int, str]] = []
@@ -455,7 +462,7 @@ def test_pump_cleanup_marks_issue_cleaned_so_it_is_not_revisited(tmp_path):
     """Находка №4 (важно): once убрано — не возвращаться, иначе мост
     навсегда дёргал бы GitHub по каждой когда-либо решённой задаче."""
     m = Mapping(tmp_path / "m.db")
-    m.remember_poll("P1", "S1", REPO, 149, [Choice("Разобрать аналитикой", "research-me")])
+    m.remember_poll("P1", "S1", REPO, 149, [Choice("Разобрать аналитикой", "research-me")], phase="classified")
     m.close_poll("P1")
     gh = FakeGitHub(labels={(REPO, 149): ["research-me", "phase:x"]})
 
@@ -476,7 +483,7 @@ def test_vote_for_unknown_option_does_not_close_poll_and_is_named_in_problems(tm
     m = Mapping(tmp_path / "m.db")
     m.remember_poll("P1", "S1", REPO, 149, [
         Choice("Разобрать аналитикой", "research-me"), Choice("Это баг", "bug-me"),
-    ])
+    ], phase="classified")
     feed = FakeFeed(votes={"P1": {"Опечатка в варианте": 1}})
     gh = FakeGitHub()
     problems: list[tuple[int, str]] = []
@@ -494,13 +501,137 @@ def test_vote_for_unknown_option_does_not_close_poll_and_is_named_in_problems(tm
 
 def test_pump_cleanup_marks_cleaned_even_when_nothing_to_remove(tmp_path):
     m = Mapping(tmp_path / "m.db")
-    m.remember_poll("P1", "S1", REPO, 149, [Choice("Разобрать аналитикой", "research-me")])
+    m.remember_poll("P1", "S1", REPO, 149, [Choice("Разобрать аналитикой", "research-me")], phase="classified")
     m.close_poll("P1")
     gh = FakeGitHub(labels={(REPO, 149): ["phase:x"]})  # снимать нечего
 
     assert pump_cleanup(gh, lambda: m.decided_uncleaned(), m.mark_cleaned) == 0
 
     assert m.decided_uncleaned() == []
+    m.close()
+
+
+# --- Итоговый обзор (сквозной ревью всей ветки) -----------------------------
+
+
+def test_cleanup_does_not_mark_cleaned_while_the_harness_still_waits(tmp_path):
+    """Правка №1 (критично): pump_cleanup звал mark_cleaned БЕЗУСЛОВНО — в
+    том же проходе, где pump_votes только что поставил метку решения. В
+    этот момент обслуживаемая система ещё не сняла needs-human:triage —
+    stale_decision_labels честно возвращает [], но задача уже помечалась
+    убранной и больше не попадала в цель уборки. Метка решения оставалась
+    навсегда.
+
+    Тест проверяет ПОСЛЕДОВАТЕЛЬНОСТЬ, а не отдельный вызов: метка стоит →
+    уборка (ничего не снято, цель осталась) → ожидание снято системой →
+    уборка снова (метка снята, цель закрыта)."""
+    m = Mapping(tmp_path / "m.db")
+    m.remember_poll(
+        "P1", "S1", REPO, 149,
+        [Choice("Разобрать аналитикой", "research-me")], phase="classified",
+    )
+    m.close_poll("P1")
+    m.mark_posted("P1", 1000.0)
+    m.mark_decided("P1", 1010.0)
+    # pump_votes только что поставил метку решения, но обслуживаемая
+    # система ещё не забрала её в работу — needs-human:triage висит.
+    gh = FakeGitHub(labels={(REPO, 149): ["research-me", "needs-human:triage"]})
+
+    assert pump_cleanup(gh, lambda: m.decided_uncleaned(), m.mark_cleaned) == 0
+    assert gh.removed == [], "метку снимать рано — контур ещё ждёт"
+    assert m.decided_uncleaned() == [(REPO, 149)], "цель обязана остаться в уборке"
+
+    # Система разобрала решение и сняла needs-human.
+    gh._labels[(REPO, 149)] = ["research-me"]
+
+    assert pump_cleanup(gh, lambda: m.decided_uncleaned(), m.mark_cleaned) == 1
+    assert gh.removed == [(REPO, 149, "research-me")]
+    assert m.decided_uncleaned() == [], "теперь цель убрана окончательно"
+    m.close()
+
+
+def test_vote_is_ignored_when_the_issue_has_left_the_polled_phase(tmp_path):
+    """Правка №2 (важно): pump_votes ставил метку, не сверив, что задача
+    всё ещё в фазе, для которой опрос публиковался. Если пока опрос висел,
+    система увела задачу в другую фазу, метка уходит не по адресу и контур
+    игнорирует её МОЛЧА — а мост при этом пишет «решений: 1», пишет
+    комментарий «Решение принято...» и зачитывает время в метрику простоя.
+    Отказ, выглядящий успехом сразу в трёх местах."""
+    m = Mapping(tmp_path / "m.db")
+    m.remember_poll("P1", "S1", REPO, 149, [
+        Choice("Разобрать аналитикой", "research-me"), Choice("Это баг", "bug-me"),
+    ], phase="classified")
+    m.mark_posted("P1", 1000.0)
+    feed = FakeFeed(votes={"P1": {"Разобрать аналитикой": 1}})
+    # Пока опрос висел, система увела задачу в другую фазу.
+    gh = FakeGitHub(labels={(REPO, 149): ["needs-human:triage", "phase:ready-for-dev"]})
+    problems: list[tuple[int, str]] = []
+
+    assert pump_votes(feed, m, gh, problems) == 0
+
+    assert gh.added == [], "метка не по адресу — ставить её нельзя"
+    assert gh.comments == [], "комментарий о решении не написан"
+    assert m.timings() == [], "простой не зачтён"
+    assert m.open_polls() == [], "неактуальный опрос закрыт — он уже не про текущее состояние"
+    assert [number for number, _ in problems] == [149]
+    m.close()
+
+
+def test_vote_still_applies_when_the_phase_did_not_change(tmp_path):
+    """Сверка фазы (правка №2) не должна мешать здоровому пути — фаза не
+    изменилась, метка ставится как раньше."""
+    m = Mapping(tmp_path / "m.db")
+    m.remember_poll("P1", "S1", REPO, 149, [
+        Choice("Разобрать аналитикой", "research-me"), Choice("Это баг", "bug-me"),
+    ], phase="classified")
+    feed = FakeFeed(votes={"P1": {"Разобрать аналитикой": 1}})
+    gh = FakeGitHub(labels={(REPO, 149): ["needs-human:triage", "phase:classified"]})
+
+    assert pump_votes(feed, m, gh) == 1
+    assert gh.added == [(REPO, 149, "research-me")]
+    m.close()
+
+
+def test_full_cycle_forgets_the_decision_key_so_the_same_phase_can_ask_again(tmp_path):
+    """Правка №3 (важно): ключ `decision:{repo}:{issue}:{phase}` вечен.
+    Если задача вернулась в уже пройденную фазу (например по «не дубликат»
+    или после эскалации), она снова ждёт человека — а лента молчит, потому
+    что развилка для этой фазы «уже была». Уборка, сняв метку решения
+    (правка №1), обязана снять и ключ развилки — цикл завершён, следующий
+    может начаться.
+
+    Полный оборот: развилка → голос → уборка (метка ещё держится системой,
+    ничего не снято) → система обработала решение, уборка снова (метка
+    снята, ключ развилки забыт) → система вернула задачу в ТУ ЖЕ фазу →
+    новая развилка публикуется."""
+    m = Mapping(tmp_path / "m.db")
+    feed = FakeFeed()
+    gh = FakeGitHub(labels={
+        (REPO, 149): ["needs-human:triage", "phase:classified"],
+    })
+
+    assert pump_decisions(feed, m, lambda: [PARKED]) == 1
+    feed._votes = {"P1": {"Разобрать аналитикой": 1}}
+
+    assert pump_votes(feed, m, gh) == 1
+    assert gh.added == [(REPO, 149, "research-me")]
+
+    # Обслуживаемая система ещё не забрала решение в работу.
+    assert pump_cleanup(gh, lambda: m.decided_uncleaned(), m.mark_cleaned) == 0
+    assert m.decided_uncleaned() == [(REPO, 149)]
+
+    # Система разобрала решение: сняла needs-human, оставив research-me.
+    gh._labels[(REPO, 149)] = ["research-me", "phase:classified"]
+    assert pump_cleanup(gh, lambda: m.decided_uncleaned(), m.mark_cleaned) == 1
+    assert gh.removed == [(REPO, 149, "research-me")]
+
+    # ...и позже вернула задачу в ТУ ЖЕ фазу снова.
+    gh._labels[(REPO, 149)] = ["needs-human:triage", "phase:classified"]
+
+    assert pump_decisions(feed, m, lambda: [PARKED]) == 1, (
+        "старый вечный ключ развилки не должен молчать на повторе той же фазы"
+    )
+    assert len(feed.polls) == 2
     m.close()
 
 
@@ -666,9 +797,7 @@ class FakeFeedMedia(FakeFeed):
         super().__init__()
         self.media = []
 
-    def post_media(self, agent, text, files, *, in_reply_to=None, poll=None):
-        if poll is not None:
-            raise ValueError("вложение и опрос несовместимы")
+    def post_media(self, agent, text, files, *, in_reply_to=None):
         self.media.append((agent, text, list(files), in_reply_to))
         return f"M{len(self.media)}"
 

@@ -1,8 +1,8 @@
 import pytest
 
 from bridge.render import (
-    Choice, question_for_phase, render_decision, render_artifact,
-    render_report, render_incident, render_agent_reply,
+    POLL_LIFETIME_SECONDS, question_for_phase, render_decision,
+    render_report, render_agent_reply,
 )
 
 REPO = "po-helper-org/poh-demo-checkout"
@@ -33,7 +33,7 @@ def test_decision_carries_coordinates_and_titles():
     post = render_decision(repo=REPO, issue=149, question=question, choices=choices)
     assert "poh-demo-checkout · #149" in post.text
     assert post.options == [c.title for c in choices]
-    assert post.expires_in is None
+    assert post.expires_in == POLL_LIFETIME_SECONDS
 
 
 def test_decision_warns_that_bug_path_is_not_implemented():
@@ -58,12 +58,20 @@ def test_decision_rejects_empty_choices():
         render_decision(repo=REPO, issue=1, question="q", choices=[])
 
 
-def test_artifact_splits_into_spoiler_and_body():
-    spoiler, body = render_artifact(
-        title="БФТ · промокод из ссылки", words=4210, body_md="## 01 Границы\n\nтекст",
-    )
-    assert spoiler == "БФТ · промокод из ссылки · 4210 слов"
-    assert body.startswith("## 01 Границы")
+# --- Итоговый обзор, правка №6: текст не должен врать о сроке опроса -------
+
+
+def test_decision_states_the_real_poll_deadline_honestly():
+    """Раньше текст утверждал «у развилки срока нет», а `Feed.post_poll`
+    тихо подставлял 7 суток от себя (API ленты требует `expires_in`
+    обязательным полем — технически бессрочного опроса не бывает). Через
+    неделю без ответа развилка молча переставала голосоваться. Текст обязан
+    называть срок опроса честно, отдельно от того, что у самого РЕШЕНИЯ
+    контура срока нет (это по-прежнему правда и по-прежнему в тексте)."""
+    question, choices = question_for_phase("classified")
+    post = render_decision(repo=REPO, issue=149, question=question, choices=choices)
+    assert "7 суток" in post.text
+    assert "эскалац" in post.text, "срок решения контура остаётся назван"
 
 
 def test_report_states_blocked_steps_in_words():
@@ -102,14 +110,6 @@ def test_report_rejects_inconsistent_arithmetic():
     принимать её нельзя."""
     with pytest.raises(ValueError):
         render_report(passed=5, total=5, seconds=96, blocked=["шаг 6 — призрак"])
-
-
-def test_incident_carries_evidence():
-    text = render_incident(
-        what="Стенд перепинован чужой сессией",
-        evidence="ISSUE_AGENT_CONTEXT уехал на a71f0c2",
-    )
-    assert "Стенд перепинован" in text and "a71f0c2" in text
 
 
 def test_agent_reply_requires_reason():

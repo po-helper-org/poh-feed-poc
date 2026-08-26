@@ -82,14 +82,6 @@ def test_poll_without_deadline_gets_a_long_one(feed):
     assert name == "make_poll" and expires_in >= 7 * 24 * 3600
 
 
-def test_media_refuses_to_be_mixed_with_poll(feed, tmp_path: Path):
-    f, _ = feed
-    shot = tmp_path / "a.png"
-    shot.write_bytes(b"\x89PNG")
-    with pytest.raises(ValueError, match="вложение"):
-        f.post_media("howtodemo", "отчёт", [shot], poll=PollPost("q", ["a"], 60))
-
-
 def test_votes_are_returned_by_option_title(feed):
     f, _ = feed
     assert f.votes("P101") == {"Сессия": 1, "БД": 0}

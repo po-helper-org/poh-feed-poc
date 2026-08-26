@@ -1,5 +1,5 @@
 from pathlib import Path
-from bridge.render import PollPost
+from bridge.render import POLL_LIFETIME_SECONDS, PollPost
 
 
 class Feed:
@@ -45,11 +45,14 @@ class Feed:
     ) -> tuple[str, str]:
         client = self._client(agent)
         try:
-            # У развилки срока нет: его держит контур, а не лента. Ставим
-            # предельно долгий, чтобы опрос не закрылся сам и не сделал
-            # решение недоступным.
+            # API ленты требует `expires_in` обязательным полем — опрос не
+            # может быть технически бессрочным (см. `POLL_LIFETIME_SECONDS`
+            # в `render.py`). `render_decision` уже подставляет это значение
+            # сам; запасной вариант здесь — страховка для любого другого
+            # вызывающего, который его не выставил, чтобы опрос не закрылся
+            # быстро и не сделал решение недоступным раньше срока контура.
             made = client.make_poll(
-                poll.options, expires_in=poll.expires_in or 7 * 24 * 3600
+                poll.options, expires_in=poll.expires_in or POLL_LIFETIME_SECONDS
             )
             kw = {"visibility": "unlisted", "poll": made}
             if in_reply_to:
@@ -63,13 +66,15 @@ class Feed:
 
     def post_media(
         self, agent: str, text: str, files: list[Path], *,
-        in_reply_to: str | None = None, poll: PollPost | None = None,
+        in_reply_to: str | None = None,
     ) -> str:
-        if poll is not None:
-            raise ValueError(
-                "вложение и опрос несовместимы в одном посте: "
-                "отчёт и вопрос по нему публикуются двумя постами"
-            )
+        # Итоговый обзор, правка №8: параметр `poll` существовал только
+        # затем, чтобы бросить `ValueError` — ни один вызывающий никогда не
+        # передавал его непустым (Mastodon API и так не принимает вложение и
+        # опрос в одном посте — `publish_report` в `pump.py` публикует их
+        # ДВУМЯ постами именно поэтому). Мёртвый параметр, живший только для
+        # собственного теста, убран; ограничение платформы остаётся верным
+        # само по себе — этот метод его просто не воспроизводит.
         client = self._client(agent)
         try:
             ids = [

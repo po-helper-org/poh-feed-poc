@@ -1,7 +1,7 @@
 import time
 from pathlib import Path
 
-from bridge.harness import stale_decision_labels
+from bridge.harness import is_parked, phase_of, stale_decision_labels
 from bridge.mapping import Mapping
 from bridge.render import (
     question_for_phase,
@@ -24,7 +24,7 @@ def pump_decisions(
     GitHub-метка — повтор создаёт вторую видимую запись), поэтому нельзя
     просто закрепить отметку сразу после вызова и забыть, как для метки.
     Вместо этого: если публикация ОТКАЗАЛА, отметку снимаем — следующий
-    обход (через 5 секунд) попробует снова. Так потерянная развилка
+    обход (через паузу цикла — `Settings.cycle_seconds`) попробует снова. Так потерянная развилка
     невозможна: либо она опубликована и учтена, либо отметка снята и
     попытка повторится. Небольшой дубль поста при редком отказе ровно в
     момент ответа сервера — куда меньшее зло, чем задача, навсегда забытая
@@ -55,7 +55,10 @@ def pump_decisions(
             status_id, poll_id = feed.post_poll("issue_agent", post, in_reply_to=parent)
             if parent is None:
                 mapping.remember_thread(parked.repo, parked.issue, status_id)
-            mapping.remember_poll(poll_id, status_id, parked.repo, parked.issue, choices)
+            mapping.remember_poll(
+                poll_id, status_id, parked.repo, parked.issue, choices,
+                phase=parked.phase,
+            )
             mapping.mark_posted(poll_id, time.time())
         except Exception as error:
             mapping.forget_seen(key)
@@ -84,10 +87,23 @@ def pump_votes(feed, mapping: Mapping, github, problems: list[tuple[int, str]] |
     никто не узнал бы почему. Причина уходит в `problems` с номером задачи
     и полученным заголовком, опрос остаётся открытым для следующего обхода.
 
-    Порядок действий обоснован разной ценой ошибки. `add_label` идёт
-    первым, и отметка «сделано» — сразу за ним, ДО комментария. Постановка
-    уже стоящей метки в GitHub безвредна и не порождает нового события
-    (контур сам никогда её не снимает, см. `stale_decision_labels`),
+    Итоговый обзор, правка №2 (важно): перед постановкой метки читаем
+    ТЕКУЩИЕ метки задачи и сверяем текущую фазу с той, под которую опрос
+    публиковался (`link.phase`, см. `Mapping.remember_poll`). Пока опрос
+    висел, обслуживаемая система могла увести задачу в другую фазу — тогда
+    метка уходит не по адресу и контур игнорирует её МОЛЧА (см. докстринг
+    `phase_of`/план), а мост при этом как ни в чём не бывало пишет
+    «решений: 1», оставляет комментарий «Решение принято...» и зачитывает
+    время в метрику простоя. Это отказ, выглядящий успехом сразу в трёх
+    местах — ровно то, против чего построен весь инструмент. При
+    расхождении фазы метку не ставим, комментарий не пишем, простой не
+    засчитываем; причина уходит в `problems`, опрос закрывается — он уже не
+    про текущее состояние задачи, оставлять его открытым нет смысла.
+
+    Порядок действий обоснован разной ценой ошибки. Сверка фазы идёт ПЕРЕД
+    `add_label`, а отметка «сделано» — сразу за ним, ДО комментария.
+    Постановка уже стоящей метки в GitHub безвредна и не порождает нового
+    события (контур сам никогда её не снимает, см. `stale_decision_labels`),
     поэтому повторный `add_label` ничего не ломает. Комментарий же видят
     люди — его дублирование недопустимо. Отметка, записанная сразу после
     метки, гарантирует, что повторный обход больше не увидит этот опрос
@@ -136,6 +152,19 @@ def pump_votes(feed, mapping: Mapping, github, problems: list[tuple[int, str]] |
                 mapping.close_poll(link.poll_id)
                 continue
 
+            current_phase = phase_of(github.labels(link.repo, link.issue), issue=link.issue)
+            if current_phase != link.phase:
+                if problems is not None:
+                    problems.append((
+                        link.issue,
+                        f"опрос {link.poll_id}: задача уехала из фазы "
+                        f"{link.phase!r} в {current_phase!r}, пока опрос "
+                        "висел — голос не по адресу, метка не поставлена, "
+                        "опрос закрыт как неактуальный",
+                    ))
+                mapping.close_poll(link.poll_id)
+                continue
+
             github.add_label(link.repo, link.issue, label)
             mapping.mark_seen(key)
             mapping.close_poll(link.poll_id)
@@ -175,7 +204,7 @@ def pump_github(
     Отметку «сделано» ставим ДО публикации, а не после — симметрично
     `pump_decisions`. Пост в ленте не идемпотентен (это не GitHub-метка,
     повтор создаёт вторую видимую запись), поэтому при отказе публикации
-    отметку снимаем: следующий обход (через 5 секунд) попробует снова.
+    отметку снимаем: следующий обход (через паузу цикла — `Settings.cycle_seconds`) попробует снова.
     Так потерянное событие невозможно: либо оно опубликовано и учтено,
     либо отметка снята и попытка повторится.
 
@@ -255,20 +284,41 @@ def pump_cleanup(
     постановка той же метки не породит события — и следующая развилка той же
     фазы не сработает. Убираем, как только ожидание закончилось.
 
-    Как только (repo, issue) проверены — метка снята или снимать было
-    нечего, — зовём `mark_cleaned`, если он передан: без этого мост навсегда
-    дёргал бы GitHub по каждой когда-либо решённой задаче (см.
-    `Mapping.mark_cleaned` / `decided_uncleaned`).
+    Итоговый обзор, правка №1 (критично): раньше `mark_cleaned` звался
+    БЕЗУСЛОВНО — в том же проходе, где `pump_votes` только что поставил
+    метку решения. В этот момент обслуживаемая система ещё не сняла
+    `needs-human:triage` (ей нужно время добраться до этой метки),
+    `stale_decision_labels` честно возвращает пустой список (задача ведь
+    ЕЩЁ ждёт человека), но задача уже помечалась убранной и в выборку целей
+    больше не попадала. Метка решения оставалась навсегда, а вместе с ней —
+    невозможность повторной развилки той же фазы (см. правку №3).
+
+    Задача считается убранной, только когда она ДЕЙСТВИТЕЛЬНО перестала
+    ждать человека (`not is_parked(labels)`) — не когда `stale_decision_labels`
+    просто ничего не нашла: эти две причины пустого списка разные
+    («ожидание ещё держится» и «снимать было нечего») и должны вести к
+    разным решениям. Метки читаем ОДИН раз на (repo, issue), а не дважды
+    (для снятия и для проверки), — see итоговый обзор, правка №5.
+
+    Пока ожидание держится, `mark_cleaned` не зовётся вовсе: цель остаётся
+    в `decided_uncleaned()` и уборка вернётся к ней на следующем обходе.
+    Как только (repo, issue) действительно перестали ждать — зовём
+    `mark_cleaned`, если он передан: без этого мост навсегда дёргал бы
+    GitHub по каждой когда-либо решённой задаче (см. `Mapping.mark_cleaned`
+    / `decided_uncleaned`). `Mapping.mark_cleaned` заодно снимает ключ
+    развилки этой фазы (правка №3) — цикл «развилка → голос → уборка»
+    закрыт, следующий может начаться.
 
     Отказ по одной задаче не должен останавливать уборку остальных.
     """
     removed = 0
     for repo, issue in read_touched():
         try:
-            for label in stale_decision_labels(github.labels(repo, issue)):
+            labels = github.labels(repo, issue)
+            for label in stale_decision_labels(labels):
                 github.remove_label(repo, issue, label)
                 removed += 1
-            if mark_cleaned is not None:
+            if mark_cleaned is not None and not is_parked(labels):
                 mark_cleaned(repo, issue)
         except Exception as error:
             if problems is not None:

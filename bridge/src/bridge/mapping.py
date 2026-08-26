@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS poll (
   poll_id TEXT PRIMARY KEY, status_id TEXT NOT NULL,
   repo TEXT NOT NULL, issue INTEGER NOT NULL,
   choices TEXT NOT NULL, closed INTEGER NOT NULL DEFAULT 0,
-  cleaned INTEGER NOT NULL DEFAULT 0);
+  cleaned INTEGER NOT NULL DEFAULT 0,
+  phase TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS seen (key TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS timing (
   poll_id TEXT PRIMARY KEY, posted_at REAL NOT NULL, decided_at REAL);
@@ -27,6 +28,7 @@ class PollLink:
     repo: str
     issue: int
     choices: list[Choice]
+    phase: str
 
     def label_for(self, title: str) -> str | None:
         """Голос приходит заголовком варианта — метку контура ищем по нему."""
@@ -44,13 +46,26 @@ class Mapping:
         self._db.commit()
 
     def _migrate(self) -> None:
-        """`CREATE TABLE IF NOT EXISTS` создаёт `cleaned` только для новой
-        базы — уже существующие базы (созданные до задачи 7-ревью) получают
-        столбец здесь, а не молча теряют учёт уборки."""
+        """`CREATE TABLE IF NOT EXISTS` создаёт новые столбцы только для новой
+        базы — уже существующие базы (созданные до соответствующей правки)
+        получают их здесь, а не молча теряют учёт.
+
+        `phase` (итоговый обзор, правка №2/№3): без фазы, под которую опрос
+        публиковался, `pump_votes` не может сверить, что задача не уехала в
+        другую фазу за время, пока опрос висел, а `mark_cleaned` не может
+        снять ключ развилки этой фазы после уборки. У баз, заведённых до этой
+        правки, фаза неизвестна — пустая строка `''` не совпадёт ни с одной
+        настоящей фазой, поэтому такие старые опросы просто не пройдут сверку
+        фазы (голос будет отклонён как «не по адресу»), что безопаснее, чем
+        угадывать."""
         cols = {row[1] for row in self._db.execute("PRAGMA table_info(poll)")}
         if "cleaned" not in cols:
             self._db.execute(
                 "ALTER TABLE poll ADD COLUMN cleaned INTEGER NOT NULL DEFAULT 0"
+            )
+        if "phase" not in cols:
+            self._db.execute(
+                "ALTER TABLE poll ADD COLUMN phase TEXT NOT NULL DEFAULT ''"
             )
 
     def close(self) -> None:
@@ -73,30 +88,35 @@ class Mapping:
 
     def remember_poll(
         self, poll_id: str, status_id: str, repo: str, issue: int,
-        choices: list[Choice],
+        choices: list[Choice], *, phase: str,
     ) -> None:
+        """`phase` — фаза задачи, под которую опубликован опрос.
+        Keyword-only и без значения по умолчанию нарочно: забыть её —
+        значит лишить `pump_votes` возможности сверить, что задача не уехала
+        в другую фазу, пока опрос висел (итоговый обзор, правка №2)."""
         payload = json.dumps(
             [{"title": c.title, "label": c.label} for c in choices],
             ensure_ascii=False,
         )
         self._db.execute(
-            "INSERT INTO poll(poll_id,status_id,repo,issue,choices,closed)"
-            " VALUES (?,?,?,?,?,0)"
+            "INSERT INTO poll(poll_id,status_id,repo,issue,choices,closed,phase)"
+            " VALUES (?,?,?,?,?,0,?)"
             " ON CONFLICT(poll_id) DO UPDATE SET"
             " status_id=excluded.status_id, repo=excluded.repo,"
-            " issue=excluded.issue, choices=excluded.choices",
-            (poll_id, status_id, repo, issue, payload),
+            " issue=excluded.issue, choices=excluded.choices,"
+            " phase=excluded.phase",
+            (poll_id, status_id, repo, issue, payload, phase),
         )
         self._db.commit()
 
     def open_polls(self) -> list[PollLink]:
         rows = self._db.execute(
-            "SELECT poll_id,status_id,repo,issue,choices FROM poll WHERE closed=0"
+            "SELECT poll_id,status_id,repo,issue,choices,phase FROM poll WHERE closed=0"
         ).fetchall()
         return [
             PollLink(
                 poll_id=r[0], status_id=r[1], repo=r[2], issue=int(r[3]),
-                choices=[Choice(**c) for c in json.loads(r[4])],
+                choices=[Choice(**c) for c in json.loads(r[4])], phase=r[5],
             )
             for r in rows
         ]
@@ -117,11 +137,35 @@ class Mapping:
 
     def mark_cleaned(self, repo: str, issue: int) -> None:
         """Задача убрана — уборка по ней отработала (метка снята или снимать
-        было нечего). Больше в decided_uncleaned() не попадёт."""
+        было нечего, см. `pump_cleanup`: убранной задача считается только
+        тогда, когда она действительно перестала ждать человека). Больше в
+        decided_uncleaned() не попадёт.
+
+        Итоговый обзор, правка №3: цикл «развилка → голос → уборка» этим не
+        заканчивается — ключ `decision:{repo}:{issue}:{phase}` в `seen`
+        обязан быть снят вместе с уборкой, иначе он вечен, и если задача
+        когда-нибудь вернётся в ту же фазу (например по «не дубликат» или
+        после эскалации), `pump_decisions` эту развилку молча пропустит —
+        решит, что она «уже была». Фазу берём у последнего решённого и ещё
+        не убранного опроса этой задачи (самого свежего по `decided_at`):
+        это и есть тот цикл, который уборка сейчас закрывает."""
+        row = self._db.execute(
+            "SELECT poll.phase FROM poll LEFT JOIN timing"
+            " ON timing.poll_id = poll.poll_id"
+            " WHERE poll.closed=1 AND poll.cleaned=0"
+            " AND poll.repo=? AND poll.issue=?"
+            " ORDER BY timing.decided_at DESC LIMIT 1",
+            (repo, issue),
+        ).fetchone()
         self._db.execute(
             "UPDATE poll SET cleaned=1 WHERE closed=1 AND repo=? AND issue=?",
             (repo, issue),
         )
+        if row is not None and row[0]:
+            self._db.execute(
+                "DELETE FROM seen WHERE key=?",
+                (f"decision:{repo}:{issue}:{row[0]}",),
+            )
         self._db.commit()
 
     def seen(self, key: str) -> bool:
@@ -167,14 +211,24 @@ class Mapping:
             ).fetchall()
         ]
 
-    def undecided_count(self) -> int:
-        """Число развилок, которые система увела в эскалацию по таймауту,
-        так и не дождавшись решения человека (`decided_at` пуст).
+    def pending_count(self) -> int:
+        """Число развилок, которые ОПУБЛИКОВАНЫ, но пока не решены
+        (`decided_at` пуст) — на МОМЕНТ ВЫЗОВА, не за всё время.
 
-        Без этого числа отчёт о простое (metrics.report) видит только
-        timings() — то есть только решённые развилки — и печатает
-        красивую медиану, ни словом не упоминая, что часть развилок
-        осталась без ответа вовсе."""
+        Было названо `undecided_count`, докстринг обещал «увела в эскалацию
+        по таймауту» — итоговый обзор указал, что это неправда: считаются
+        ВСЕ развилки без `decided_at`, включая опубликованную секунду назад
+        и ещё честно дожидающуюся голоса. Отличить «висит сейчас» от
+        «умерла по таймауту» по одним `posted_at`/`decided_at` нельзя — для
+        этого нужно было бы отдельно спрашивать состояние задачи в GitHub, а
+        это дороже, чем переименовать функцию и перестать врать в тексте.
+        Выбран дешёвый путь: имя и докстринг честно говорят, что считается
+        число ещё не решённых прямо сейчас, а не число умерших по таймауту.
+
+        Без этого числа отчёт о простое (metrics.report) видел бы только
+        timings() — то есть только решённые развилки — и печатал бы
+        красивую медиану, ни словом не упоминая, что часть развилок пока
+        (или навсегда) осталась без ответа."""
         row = self._db.execute(
             "SELECT COUNT(*) FROM timing WHERE decided_at IS NULL"
         ).fetchone()

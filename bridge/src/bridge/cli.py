@@ -51,11 +51,16 @@ def main() -> int:
             print(f"события GitHub: обход не удался: {error}", file=sys.stderr)
 
         try:
-            touched = [
-                (link.repo, link.issue) for link in mapping.open_polls()
-            ] + mapping.decided_uncleaned()
+            # Итоговый обзор, правка №8: цель уборки — только
+            # `decided_uncleaned()`. Задача с ЕЩЁ ОТКРЫТЫМ опросом (первая
+            # половина прежнего списка) заведомо ещё ждёт человека —
+            # решение по ней не принято, `pump_votes` метку решения не
+            # ставил, значит `stale_decision_labels` там по построению
+            # ничего не найдёт. Дёргать GitHub ради проверки, которая не
+            # может ничего снять, — лишний запрос без цели (см. правку №5:
+            # именно эти лишние обращения упирались в лимит GitHub).
             cleaned = pump_cleanup(
-                github, lambda: touched, mapping.mark_cleaned, problems
+                github, mapping.decided_uncleaned, mapping.mark_cleaned, problems
             )
         except Exception as error:
             print(f"уборка: обход не удался: {error}", file=sys.stderr)
@@ -79,4 +84,4 @@ def main() -> int:
 
         if once:
             return 0
-        time.sleep(5)
+        time.sleep(settings.cycle_seconds)

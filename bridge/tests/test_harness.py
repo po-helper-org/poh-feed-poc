@@ -349,6 +349,25 @@ def test_github_recent_issues_failure_wrapped_with_context():
     assert "сеть легла" in str(excinfo.value.__cause__)
 
 
+# --- Итоговый обзор, правка №5: объект репозитория кэшируется -------------
+
+
+def test_repo_object_is_fetched_once_and_reused_across_calls(fake_repo):
+    """Без кэша каждый вызов `_issue` (через `labels`/`add_label`/
+    `remove_label`/`comment`) заново звал `get_repo()` — лишний HTTP-запрос
+    на каждое обращение. Уборка одна дёргала его дважды на каждый открытый
+    опрос (`get_repo` + `get_issue`); при непрерывном обходе это грозило
+    упереться в лимит GitHub 5000/час."""
+    client = FakeGithubClient({"o/r": fake_repo})
+    gh = GitHub("token", client=client)
+
+    gh.labels("o/r", 149)
+    gh.labels("o/r", 150)
+    gh.labels("o/r", 151)
+
+    assert client.requested_repos == ["o/r"], "get_repo обязан звонить один раз на репозиторий"
+
+
 # --- client= позволяет подставлять подделку без сети -----------------------
 
 

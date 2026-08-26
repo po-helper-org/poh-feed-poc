@@ -45,6 +45,20 @@ QUESTION_BY_PHASE: dict[str, tuple[str, list[Choice]]] = {
 # системе нельзя, — но предупреждаем до нажатия.
 NOT_IMPLEMENTED_LABELS = frozenset({"bug-me"})
 
+# Итоговый обзор, правка №6: API ленты (Mastodon-совместимый) требует
+# `poll[expires_in]` ОБЯЗАТЕЛЬНЫМ полем при создании опроса — технически
+# бессрочного опроса в этой ленте не существует (проверено по
+# https://docs.joinmastodon.org/methods/statuses/, живьём не публиковалось).
+# У КОНТУРА своего решения по опросу срока нет — по истечении СВОЕГО срока
+# ожидания он не применяет вариант, а уводит задачу в эскалацию (это и
+# обещает текст поста). У самого ОПРОСА в ленте срок есть — платформа не
+# оставляет выбора — и `render_decision` обязан называть его честно, а не
+# молчать: раньше `render_decision` не выставлял
+# `expires_in`, `Feed.post_poll` тихо подставлял 7 суток от себя, а текст
+# поста утверждал «срока нет» — через неделю без ответа развилка молча
+# переставала голосоваться.
+POLL_LIFETIME_SECONDS = 7 * 24 * 3600
+
 
 def question_for_phase(phase: str) -> tuple[str, list[Choice]] | None:
     """Вопрос и варианты для фазы. None — фаза решения не ждёт."""
@@ -58,9 +72,14 @@ def _short_repo(repo: str) -> str:
 def render_decision(
     repo: str, issue: int, question: str, choices: list[Choice]
 ) -> PollPost:
-    """Развилка. Срока у опроса нет намеренно: срок ожидания держит контур,
-    и по его истечении он НЕ применяет вариант, а снимает задачу с ожидания
-    через эскалацию. Обещать дефолт значило бы врать о поведении системы."""
+    """Развилка. У РЕШЕНИЯ КОНТУРА срока нет намеренно: по истечении своего
+    срока ожидания контур НЕ применяет вариант, а снимает задачу с ожидания
+    через эскалацию. Обещать дефолт значило бы врать о поведении системы.
+
+    У самого ОПРОСА в ленте срок есть — `POLL_LIFETIME_SECONDS`, платформа
+    не оставляет выбора (см. комментарий там же) — и текст поста обязан
+    называть его честно, а не заявлять, что срока нет вовсе (итоговый
+    обзор, правка №6)."""
     if not choices:
         raise ValueError("развилка без вариантов не имеет смысла")
     lines = [question, ""]
@@ -70,14 +89,17 @@ def render_decision(
         lines.append(f"Осторожно: путь {names} в контуре ещё не реализован — прогон упадёт.")
         lines.append("")
     lines.append("Без ответа контур уводит задачу в эскалацию по своему сроку.")
+    lines.append(
+        "Сам опрос в ленте открыт 7 суток (требование платформы, не "
+        "контура) — если решение придёт позже, переголосовать здесь будет "
+        "нельзя."
+    )
     lines.append("")
     lines.append(f"{_short_repo(repo)} · #{issue}")
-    return PollPost(text="\n".join(lines), options=[c.title for c in choices])
-
-
-def render_artifact(title: str, words: int, body_md: str) -> tuple[str, str]:
-    """Фрагмент: свёртка видна всем, документ разворачивается нажатием."""
-    return f"{title} · {words} слов", body_md
+    return PollPost(
+        text="\n".join(lines), options=[c.title for c in choices],
+        expires_in=POLL_LIFETIME_SECONDS,
+    )
 
 
 def unaccounted_sentences(passed: int, total: int, blocked: list[str]) -> list[str]:
@@ -122,10 +144,6 @@ def render_report(passed: int, total: int, seconds: int, blocked: list[str]) -> 
     if sentences:
         text += "\n\n" + "\n".join(sentences)
     return text
-
-
-def render_incident(what: str, evidence: str) -> str:
-    return f"{what}\n\n{evidence}"
 
 
 def render_agent_reply(body: str, reason: str) -> str:
