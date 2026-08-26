@@ -32,22 +32,34 @@ class Feed:
             kw["spoiler_text"] = spoiler
         if in_reply_to:
             kw["in_reply_to_id"] = in_reply_to
-        return str(self._client(agent).status_post(text, **kw)["id"])
+        client = self._client(agent)
+        try:
+            return str(client.status_post(text, **kw)["id"])
+        except Exception as error:
+            raise RuntimeError(
+                f"лента: пост от агента {agent!r} не удался: {error}"
+            ) from error
 
     def post_poll(
         self, agent: str, poll: PollPost, *, in_reply_to: str | None = None
     ) -> tuple[str, str]:
         client = self._client(agent)
-        # У развилки срока нет: его держит контур, а не лента. Ставим предельно
-        # долгий, чтобы опрос не закрылся сам и не сделал решение недоступным.
-        made = client.make_poll(
-            poll.options, expires_in=poll.expires_in or 7 * 24 * 3600
-        )
-        kw = {"visibility": "unlisted", "poll": made}
-        if in_reply_to:
-            kw["in_reply_to_id"] = in_reply_to
-        result = client.status_post(poll.text, **kw)
-        return str(result["id"]), str(result["poll"]["id"])
+        try:
+            # У развилки срока нет: его держит контур, а не лента. Ставим
+            # предельно долгий, чтобы опрос не закрылся сам и не сделал
+            # решение недоступным.
+            made = client.make_poll(
+                poll.options, expires_in=poll.expires_in or 7 * 24 * 3600
+            )
+            kw = {"visibility": "unlisted", "poll": made}
+            if in_reply_to:
+                kw["in_reply_to_id"] = in_reply_to
+            result = client.status_post(poll.text, **kw)
+            return str(result["id"]), str(result["poll"]["id"])
+        except Exception as error:
+            raise RuntimeError(
+                f"лента: опрос от агента {agent!r} не удался: {error}"
+            ) from error
 
     def post_media(
         self, agent: str, text: str, files: list[Path], *,
@@ -59,13 +71,35 @@ class Feed:
                 "отчёт и вопрос по нему публикуются двумя постами"
             )
         client = self._client(agent)
-        ids = [client.media_post(str(p), description=p.stem)["id"] for p in files]
-        kw = {"visibility": "unlisted", "media_ids": ids}
-        if in_reply_to:
-            kw["in_reply_to_id"] = in_reply_to
-        return str(client.status_post(text, **kw)["id"])
+        try:
+            ids = [
+                client.media_post(str(p), description=p.stem)["id"] for p in files
+            ]
+            kw = {"visibility": "unlisted", "media_ids": ids}
+            if in_reply_to:
+                kw["in_reply_to_id"] = in_reply_to
+            return str(client.status_post(text, **kw)["id"])
+        except Exception as error:
+            raise RuntimeError(
+                f"лента: вложение от агента {agent!r} не удалось опубликовать: "
+                f"{error}"
+            ) from error
 
     def votes(self, poll_id: str) -> dict[str, int]:
-        any_client = next(iter(self._clients.values()))
-        data = any_client.poll(poll_id)
-        return {o["title"]: int(o["votes_count"]) for o in data["options"]}
+        # Опрос виден и голосуется любым локальным клиентом, потому что
+        # видимость поста — `unlisted` (см. post_poll): `private` был бы виден
+        # только подписчикам, а подписка агента на агента уходит в ожидание
+        # одобрения, так что клиент, никак не связанный с автором опроса,
+        # читает счётчики так же исправно, как и клиент автора. Клиента для
+        # чтения выбираем детерминированно — по отсортированному имени
+        # агента, а не через `next(iter(...))`, который зависит от порядка
+        # вставки в словарь (случайность реализации, а не контракт).
+        reader_agent = min(self._clients)
+        try:
+            data = self._clients[reader_agent].poll(poll_id)
+            return {o["title"]: int(o["votes_count"]) for o in data["options"]}
+        except Exception as error:
+            raise RuntimeError(
+                f"лента: чтение голосов опроса {poll_id!r} клиентом "
+                f"{reader_agent!r} не удалось: {error}"
+            ) from error

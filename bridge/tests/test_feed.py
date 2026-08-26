@@ -99,3 +99,130 @@ def test_unknown_agent_fails_loudly(feed):
     f, _ = feed
     with pytest.raises(KeyError, match="delivery"):
         f.post("delivery", "текст")
+
+
+def test_post_media_passes_ids_visibility_and_paths_as_strings(feed, tmp_path: Path):
+    """Ветка отказа (вложение + опрос) была проверена и раньше, а основной
+    путь — какие аргументы реально уходят в media_post и status_post — нет:
+    подделка добрее реальности, пока это не закрыто фактом передачи."""
+    f, clients = feed
+    a = tmp_path / "график.png"
+    a.write_bytes(b"\x89PNG")
+    b = tmp_path / "лог.png"
+    b.write_bytes(b"\x89PNG")
+
+    sid = f.post_media("howtodemo", "отчёт", [a, b])
+
+    calls = clients["howtodemo"].calls
+    assert calls[0] == ("media_post", str(a), "график")
+    assert calls[1] == ("media_post", str(b), "лог")
+    name, status, kw = calls[2]
+    assert name == "status_post" and status == "отчёт"
+    assert kw["visibility"] == "unlisted"
+    assert kw["media_ids"] == ["M101", "M102"]
+    assert sid == "103"
+
+
+def test_post_passes_in_reply_to(feed):
+    f, clients = feed
+    f.post("issue_agent", "ответ", in_reply_to="55")
+    _, _, kw = clients["issue_agent"].calls[0]
+    assert kw["in_reply_to_id"] == "55"
+
+
+def test_post_poll_passes_in_reply_to(feed):
+    f, clients = feed
+    f.post_poll(
+        "issue_agent", PollPost(text="в", options=["да", "нет"]), in_reply_to="55"
+    )
+    name, status, kw = clients["issue_agent"].calls[1]
+    assert name == "status_post"
+    assert kw["in_reply_to_id"] == "55"
+
+
+def test_post_media_passes_in_reply_to(feed, tmp_path: Path):
+    f, clients = feed
+    shot = tmp_path / "a.png"
+    shot.write_bytes(b"\x89PNG")
+    f.post_media("howtodemo", "отчёт", [shot], in_reply_to="55")
+    name, status, kw = clients["howtodemo"].calls[-1]
+    assert name == "status_post"
+    assert kw["in_reply_to_id"] == "55"
+
+
+def test_votes_client_choice_does_not_depend_on_dict_insertion_order(feed):
+    """`votes()` не должен зависеть от порядка обхода словаря клиентов — тот
+    хранит порядок вставки, а не контракт. Один и тот же клиент выбирается
+    для одного набора агентов независимо от того, в каком порядке их
+    перечислили при создании Feed."""
+    a, b = FakeClient(), FakeClient()
+    forward = Feed(clients={"issue_agent": a, "howtodemo": b})
+    backward = Feed(clients={"howtodemo": b, "issue_agent": a})
+
+    forward.votes("P101")
+    backward.votes("P101")
+
+    assert b.calls == [("poll", "P101"), ("poll", "P101")]
+    assert a.calls == []
+
+
+class FailingClient(FakeClient):
+    def status_post(self, status, **kw):
+        raise RuntimeError("сеть легла")
+
+    def make_poll(self, options, expires_in):
+        raise RuntimeError("сеть легла")
+
+    def media_post(self, path, description=None):
+        raise RuntimeError("сеть легла")
+
+    def poll(self, poll_id):
+        raise RuntimeError("сеть легла")
+
+
+class MalformedClient(FakeClient):
+    """Отвечает без ожидаемого поля — источник голого KeyError('id')."""
+
+    def status_post(self, status, **kw):
+        self.calls.append(("status_post", status, kw))
+        return {}
+
+
+def test_post_failure_is_wrapped_with_agent_and_operation_context():
+    f = Feed(clients={"issue_agent": FailingClient()})
+    with pytest.raises(RuntimeError, match="issue_agent") as excinfo:
+        f.post("issue_agent", "текст")
+    assert excinfo.value.__cause__ is not None
+    assert "сеть легла" in str(excinfo.value.__cause__)
+
+
+def test_post_malformed_response_wraps_bare_keyerror_with_context():
+    f = Feed(clients={"issue_agent": MalformedClient()})
+    with pytest.raises(RuntimeError, match="issue_agent") as excinfo:
+        f.post("issue_agent", "текст")
+    assert isinstance(excinfo.value.__cause__, KeyError)
+
+
+def test_post_poll_failure_is_wrapped_with_agent_and_operation_context():
+    f = Feed(clients={"issue_agent": FailingClient()})
+    with pytest.raises(RuntimeError, match="issue_agent") as excinfo:
+        f.post_poll("issue_agent", PollPost(text="в", options=["да", "нет"]))
+    assert "сеть легла" in str(excinfo.value.__cause__)
+
+
+def test_post_media_failure_is_wrapped_with_agent_and_operation_context(
+    tmp_path: Path,
+):
+    f = Feed(clients={"howtodemo": FailingClient()})
+    shot = tmp_path / "a.png"
+    shot.write_bytes(b"\x89PNG")
+    with pytest.raises(RuntimeError, match="howtodemo") as excinfo:
+        f.post_media("howtodemo", "отчёт", [shot])
+    assert "сеть легла" in str(excinfo.value.__cause__)
+
+
+def test_votes_failure_is_wrapped_with_poll_id_and_agent_context():
+    f = Feed(clients={"issue_agent": FailingClient()})
+    with pytest.raises(RuntimeError, match="P101") as excinfo:
+        f.votes("P101")
+    assert "сеть легла" in str(excinfo.value.__cause__)
