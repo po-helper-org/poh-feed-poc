@@ -1,8 +1,9 @@
 import time
+from pathlib import Path
 
 from bridge.harness import stale_decision_labels
 from bridge.mapping import Mapping
-from bridge.render import question_for_phase, render_decision
+from bridge.render import question_for_phase, render_agent_reply, render_decision, render_report
 
 
 def pump_decisions(
@@ -267,3 +268,35 @@ def pump_cleanup(
             if problems is not None:
                 problems.append((issue, str(error)))
     return removed
+
+
+def publish_report(
+    feed, mapping: Mapping, repo: str, issue: int, *,
+    passed: int, total: int, seconds: int, blocked: list[str], shots: list[Path],
+) -> tuple[str, str | None]:
+    """Отчёт приёмки: улики вложениями. Вложение и опрос в одном посте Mastodon
+    не принимает, поэтому продолжение уходит ОТДЕЛЬНЫМ постом-ответом.
+
+    Продолжение — обычный ответ, не опрос: варианты «принять / перепрогнать»
+    не отображаются ни в одну метку контура, голос по ним ничего бы не сделал.
+    Кнопка, которая ничего не делает, хуже её отсутствия.
+
+    Вызывается вручную агентом приёмки, а не циклом перекачки — поштучная
+    обработка отказов здесь не нужна (нет соседних задач, которые отказ одной
+    не должен топить, как в pump_*). Отказ публикации уходит наверх как есть:
+    `feed.post_media`/`feed.post` уже заворачивают причину в `RuntimeError`."""
+    parent = mapping.thread_for(repo, issue)
+    text = render_report(passed=passed, total=total, seconds=seconds, blocked=blocked)
+    report_id = feed.post_media("howtodemo", text, shots, in_reply_to=parent)
+    if passed == total and not blocked:
+        return report_id, None
+    unproven = "; ".join(blocked) if blocked else f"{total - passed} шаг(ов)"
+    follow_id = feed.post(
+        "howtodemo",
+        render_agent_reply(
+            body=f"Осталось непроверенным: {unproven}. Решение за тобой.",
+            reason="вердикт посчитан кодом, недостающие шаги названы поимённо",
+        ),
+        in_reply_to=report_id,
+    )
+    return report_id, follow_id

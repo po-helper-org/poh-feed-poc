@@ -1,6 +1,8 @@
+from pathlib import Path
+
 from bridge.harness import Parked
 from bridge.mapping import Mapping
-from bridge.pump import pump_cleanup, pump_decisions, pump_github, pump_votes
+from bridge.pump import publish_report, pump_cleanup, pump_decisions, pump_github, pump_votes
 from bridge.render import Choice
 
 REPO = "po-helper-org/poh-demo-checkout"
@@ -651,4 +653,55 @@ def test_broken_repo_does_not_block_the_rest_and_is_named_in_problems(tmp_path):
     number, reason = problems[0]
     assert number == 0, "у отказа репозитория нет номера конкретной задачи — используется 0"
     assert "another-org/another-repo" in reason
+    m.close()
+
+
+# --- Задача 9: отчёт приёмки со скриншотами --------------------------------
+
+
+class FakeFeedMedia(FakeFeed):
+    def __init__(self):
+        super().__init__()
+        self.media = []
+
+    def post_media(self, agent, text, files, *, in_reply_to=None, poll=None):
+        if poll is not None:
+            raise ValueError("вложение и опрос несовместимы")
+        self.media.append((agent, text, list(files), in_reply_to))
+        return f"M{len(self.media)}"
+
+
+def test_full_pass_publishes_report_without_question(tmp_path: Path):
+    feed, m = FakeFeedMedia(), Mapping(tmp_path / "m.db")
+    m.remember_thread("po-helper-org/poh-demo-checkout", 149, "S9")
+    shot = tmp_path / "a.png"
+    shot.write_bytes(b"\x89PNG")
+    report_id, follow_id = publish_report(
+        feed, m, "po-helper-org/poh-demo-checkout", 149,
+        passed=5, total=5, seconds=96, blocked=[], shots=[shot],
+    )
+    assert report_id == "M1" and follow_id is None
+    assert feed.media[0][3] == "S9"
+    assert "5 из 5" in feed.media[0][1]
+    assert feed.polls == []
+    m.close()
+
+
+def test_partial_pass_replies_with_what_is_unproven(tmp_path: Path):
+    """Опрос здесь не годится: его варианты не отображаются ни в одну метку
+    контура, и голос по ним ничего бы не сделал. Кнопка, которая ничего не
+    делает, хуже её отсутствия."""
+    feed, m = FakeFeedMedia(), Mapping(tmp_path / "m.db")
+    m.remember_thread("po-helper-org/poh-demo-checkout", 149, "S9")
+    shot = tmp_path / "a.png"
+    shot.write_bytes(b"\x89PNG")
+    report_id, follow_id = publish_report(
+        feed, m, "po-helper-org/poh-demo-checkout", 149,
+        passed=4, total=5, seconds=96, blocked=["шаг 4 — браузер"], shots=[shot],
+    )
+    assert report_id == "M1" and follow_id == "S1"
+    assert feed.posts[0][2] == "M1", "ответ крепится к посту отчёта"
+    assert "шаг 4 — браузер" in feed.posts[0][1]
+    assert feed.polls == [], "опроса быть не должно"
+    assert "Не проверял" in feed.media[0][1]
     m.close()
