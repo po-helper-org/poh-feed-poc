@@ -1,0 +1,4 @@
+https://feed.localhost {
+  tls internal
+  reverse_proxy feed:8080
+}
