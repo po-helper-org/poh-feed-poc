@@ -17,30 +17,54 @@ class Parked:
     phase: str
 
 
-def phase_of(labels: list[str]) -> str | None:
-    for label in labels:
-        if label.startswith(PHASE_PREFIX):
-            return label[len(PHASE_PREFIX):]
-    return None
+def phase_of(labels: list[str], issue: int | None = None) -> str | None:
+    """Метка фазы на задаче ровно одна — это инвариант контура. Если их
+    оказалось несколько (инвариант нарушен), угадывать, какая верна, нельзя:
+    неверная фаза даёт неверный набор вариантов решения, человек нажмёт
+    кнопку, и контур эту метку молча проигнорирует — прогон останется стоять,
+    а никто не узнает почему. Поэтому неоднозначность называется явно, вместе
+    с номером задачи, если он известен вызывающему."""
+    phases = [label[len(PHASE_PREFIX):] for label in labels if label.startswith(PHASE_PREFIX)]
+    if len(phases) > 1:
+        where = f"задача {issue}" if issue is not None else "задача"
+        raise ValueError(f"{where}: несколько меток фазы: {phases}")
+    return phases[0] if phases else None
 
 
 def is_parked(labels: list[str]) -> bool:
     return NEEDS_HUMAN in labels
 
 
-def parked_from(issues: list[dict]) -> list[Parked]:
-    """Задачи, ждущие человека. Без метки фазы задача пропускается: неизвестно,
-    какие метки решения допустимы, а неподходящая игнорируется контуром молча."""
+def parked_from(
+    issues: list[dict], problems: list[tuple[int, str]] | None = None
+) -> list[Parked]:
+    """Задачи, ждущие человека. Без метки фазы или с несколькими метками фазы
+    задача пропускается: неизвестно, какие метки решения допустимы, а
+    неподходящая игнорируется контуром молча.
+
+    Отказ по одной задаче не должен прерывать разбор остальных — контур,
+    который мы обслуживаем, однажды уронил весь обход из-за одного плохого
+    элемента (171 падение подряд). Если передан `problems`, в него
+    дописывается пара (номер задачи, причина) для каждой пропущенной задачи;
+    если не передан — они просто отбрасываются."""
     out = []
     for issue in issues:
+        number = int(issue["number"])
         labels = list(issue.get("labels", []))
         if not is_parked(labels):
             continue
-        phase = phase_of(labels)
+        try:
+            phase = phase_of(labels, issue=number)
+        except ValueError as error:
+            if problems is not None:
+                problems.append((number, str(error)))
+            continue
         if phase is None:
+            if problems is not None:
+                problems.append((number, "нет метки фазы"))
             continue
         out.append(Parked(
-            repo=issue["repo"], issue=int(issue["number"]),
+            repo=issue["repo"], issue=number,
             title=issue["title"], phase=phase,
         ))
     return out
@@ -58,44 +82,88 @@ def stale_decision_labels(labels: list[str]) -> list[str]:
 class GitHub:
     """Тонкая обёртка. Вся логика — в чистых функциях выше."""
 
-    def __init__(self, token: str):
-        from github import Github
+    def __init__(self, token: str, client=None):
+        if client is not None:
+            self._gh = client
+        else:
+            from github import Github
 
-        self._gh = Github(token)
+            self._gh = Github(token)
 
     def _issue(self, repo: str, number: int):
         return self._gh.get_repo(repo).get_issue(number)
 
     def labels(self, repo: str, issue: int) -> list[str]:
-        return [label.name for label in self._issue(repo, issue).labels]
+        try:
+            return [label.name for label in self._issue(repo, issue).labels]
+        except Exception as error:
+            raise RuntimeError(
+                f"github: чтение меток задачи {repo}#{issue} не удалось: {error}"
+            ) from error
 
-    def parked(self, repos) -> list[Parked]:
+    def parked(
+        self, repos, problems: list[tuple[int, str]] | None = None
+    ) -> list[Parked]:
+        """`problems`, если передан, получает (номер задачи, причина) для
+        каждой задачи, чью фазу не удалось разобрать — см. `parked_from`."""
         rows = []
         for repo in repos:
-            for issue in self._gh.get_repo(repo).get_issues(
-                state="open", labels=[NEEDS_HUMAN]
-            ):
+            try:
+                issues = list(
+                    self._gh.get_repo(repo).get_issues(
+                        state="open", labels=[NEEDS_HUMAN]
+                    )
+                )
+            except Exception as error:
+                raise RuntimeError(
+                    f"github: поиск припаркованных задач в {repo!r} не удался: "
+                    f"{error}"
+                ) from error
+            for issue in issues:
                 rows.append({
                     "repo": repo, "number": issue.number, "title": issue.title,
                     "labels": [label.name for label in issue.labels],
                 })
-        return parked_from(rows)
+        return parked_from(rows, problems)
 
     def recent_issues(self, repo: str, limit: int = 20) -> list[dict]:
-        out = []
-        for issue in self._gh.get_repo(repo).get_issues(state="all", sort="updated")[:limit]:
-            out.append({
-                "repo": repo, "number": issue.number, "title": issue.title,
-                "state": issue.state, "updated": issue.updated_at.isoformat(),
-                "labels": [label.name for label in issue.labels],
-            })
-        return out
+        try:
+            issues = self._gh.get_repo(repo).get_issues(state="all", sort="updated")[:limit]
+            out = []
+            for issue in issues:
+                out.append({
+                    "repo": repo, "number": issue.number, "title": issue.title,
+                    "state": issue.state, "updated": issue.updated_at.isoformat(),
+                    "labels": [label.name for label in issue.labels],
+                })
+            return out
+        except Exception as error:
+            raise RuntimeError(
+                f"github: чтение последних задач {repo!r} не удалось: {error}"
+            ) from error
 
     def comment(self, repo: str, issue: int, body: str) -> None:
-        self._issue(repo, issue).create_comment(body)
+        try:
+            self._issue(repo, issue).create_comment(body)
+        except Exception as error:
+            raise RuntimeError(
+                f"github: комментарий к {repo}#{issue} не удался: {error}"
+            ) from error
 
     def add_label(self, repo: str, issue: int, label: str) -> None:
-        self._issue(repo, issue).add_to_labels(label)
+        try:
+            self._issue(repo, issue).add_to_labels(label)
+        except Exception as error:
+            raise RuntimeError(
+                f"github: постановка метки {label!r} на {repo}#{issue} не "
+                f"удалась: {error}"
+            ) from error
 
     def remove_label(self, repo: str, issue: int, label: str) -> None:
-        self._issue(repo, issue).remove_from_labels(label)
+        try:
+            self._issue(repo, issue).remove_from_labels(label)
+        except Exception as error:
+            raise RuntimeError(
+                f"github: снятие метки {label!r} с {repo}#{issue} не удалось: "
+                f"{error}"
+            ) from error
