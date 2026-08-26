@@ -85,7 +85,7 @@ def render_report(passed: int, total: int, seconds: int, blocked: list[str]) -> 
     пустая проверка неотличима от пройденной, если о ней промолчать."""
     text = f"Сценарий: {passed} из {total} за {seconds} с."
     if blocked:
-        text += "\n\nне проверял: " + "; ".join(blocked) + "."
+        text += "\n\nНе проверял: " + "; ".join(blocked) + "."
     return text
 
 

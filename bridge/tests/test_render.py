@@ -69,11 +69,11 @@ def test_artifact_splits_into_spoiler_and_body():
 def test_report_states_blocked_steps_in_words():
     text = render_report(passed=4, total=5, seconds=96, blocked=["шаг 4 — браузер"])
     assert "4 из 5" in text and "96 с" in text
-    assert "шаг 4 — браузер" in text and "не проверял" in text
+    assert "шаг 4 — браузер" in text and "Не проверял" in text
 
 
 def test_report_without_blocked_says_nothing_about_them():
-    assert "не проверял" not in render_report(passed=5, total=5, seconds=96, blocked=[])
+    assert "Не проверял" not in render_report(passed=5, total=5, seconds=96, blocked=[])
 
 
 def test_incident_carries_evidence():
