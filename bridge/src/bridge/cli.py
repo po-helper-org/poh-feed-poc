@@ -23,8 +23,11 @@ def main() -> int:
         # прятать проблемы, накопленные другими, и не должен мешать им
         # отработать в этом же проходе.
         try:
+            # У pump_decisions уже есть поштучный try/except внутри — сюда
+            # попадает только непредвиденный отказ самого цикла (например,
+            # github.parked() из-за недоступного репозитория).
             made = pump_decisions(
-                feed, mapping, lambda: github.parked(settings.repos, problems)
+                feed, mapping, lambda: github.parked(settings.repos, problems), problems
             )
         except Exception as error:
             print(f"развилки: обход не удался: {error}", file=sys.stderr)

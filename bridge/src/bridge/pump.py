@@ -5,7 +5,10 @@ from bridge.mapping import Mapping
 from bridge.render import question_for_phase, render_decision
 
 
-def pump_decisions(feed, mapping: Mapping, read_parked) -> int:
+def pump_decisions(
+    feed, mapping: Mapping, read_parked,
+    problems: list[tuple[int, str]] | None = None,
+) -> int:
     """Задачи, ждущие человека, превращает в посты с опросом. Одна задача —
     один пост: ключ идемпотентности не даёт повторному обходу плодить копии.
 
@@ -13,12 +16,18 @@ def pump_decisions(feed, mapping: Mapping, read_parked) -> int:
     чем у голоса в `pump_votes`: пост в ленте не идемпотентен (это не
     GitHub-метка — повтор создаёт вторую видимую запись), поэтому нельзя
     просто закрепить отметку сразу после вызова и забыть, как для метки.
-    Вместо этого: если публикация ОТКАЗАЛА, отметку снимаем и даём отказу
-    уйти наверх — к обработчику этого прохода в cli.py; следующий обход
-    (через 5 секунд) попробует снова. Так потерянная развилка невозможна:
-    либо она опубликована и учтена, либо отметка снята и попытка
-    повторится. Небольшой дубль поста при редком отказе ровно в момент
-    ответа сервера — куда меньшее зло, чем задача, навсегда забытая молча.
+    Вместо этого: если публикация ОТКАЗАЛА, отметку снимаем — следующий
+    обход (через 5 секунд) попробует снова. Так потерянная развилка
+    невозможна: либо она опубликована и учтена, либо отметка снята и
+    попытка повторится. Небольшой дубль поста при редком отказе ровно в
+    момент ответа сервера — куда меньшее зло, чем задача, навсегда забытая
+    молча.
+
+    Отказ по одной развилке не должен останавливать разбор остальных — так
+    контур, который мы обслуживаем, однажды уронил весь обход из-за одного
+    недоступного репозитория (171 падение подряд); переносить эту беду сюда
+    нельзя. Причина отказа, если передан `problems`, уходит в него вместе с
+    номером задачи — симметрично `pump_votes`/`pump_cleanup`.
     """
     made = 0
     for parked in read_parked():
@@ -43,9 +52,12 @@ def pump_decisions(feed, mapping: Mapping, read_parked) -> int:
             mapping.mark_posted(poll_id, time.time())
         except Exception as error:
             mapping.forget_seen(key)
-            raise RuntimeError(
-                f"развилка {parked.repo}#{parked.issue}: публикация не удалась: {error}"
-            ) from error
+            if problems is not None:
+                problems.append((
+                    parked.issue,
+                    f"развилка {parked.repo}#{parked.issue}: публикация не удалась: {error}",
+                ))
+            continue
         made += 1
     return made
 
@@ -57,6 +69,13 @@ def pump_votes(feed, mapping: Mapping, github, problems: list[tuple[int, str]] |
     большинство нельзя. При ничьей решение не наше: не действуем вовсе,
     причину называем в `problems`, опрос остаётся открытым — вдруг кто-то
     проголосует ещё и ничья разрешится сама.
+
+    Если `link.label_for(title)` вернул `None` — голос отдан за заголовок,
+    которого нет среди вариантов опроса, — метку не ставим и опрос не
+    закрываем. Закрыть его в этой ветке значило бы молча потерять решение
+    человека: он проголосовал, опрос исчез, а метка так и не появилась, и
+    никто не узнал бы почему. Причина уходит в `problems` с номером задачи
+    и полученным заголовком, опрос остаётся открытым для следующего обхода.
 
     Порядок действий обоснован разной ценой ошибки. `add_label` идёт
     первым, и отметка «сделано» — сразу за ним, ДО комментария. Постановка
@@ -95,8 +114,18 @@ def pump_votes(feed, mapping: Mapping, github, problems: list[tuple[int, str]] |
                 continue
             title = winners[0]
             label = link.label_for(title)
+            if label is None:
+                if problems is not None:
+                    problems.append((
+                        link.issue,
+                        f"опрос {link.poll_id}: голос за «{title}» не соответствует ни "
+                        "одному известному варианту — метка не поставлена, опрос "
+                        "остаётся открытым",
+                    ))
+                continue
+
             key = f"vote:{link.poll_id}"
-            if label is None or mapping.seen(key):
+            if mapping.seen(key):
                 mapping.close_poll(link.poll_id)
                 continue
 

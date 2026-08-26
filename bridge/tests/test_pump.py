@@ -1,5 +1,3 @@
-import pytest
-
 from bridge.harness import Parked
 from bridge.mapping import Mapping
 from bridge.pump import pump_cleanup, pump_decisions, pump_votes
@@ -85,6 +83,21 @@ class SpyFailFeed(FakeFeed):
     def post_poll(self, agent, poll, *, in_reply_to=None):
         self.seen_at_call_time = self._mapping.seen(self._key)
         raise RuntimeError("таймаут ответа — пост мог физически уйти")
+
+
+class FlakyPostPollFeed(FakeFeed):
+    """post_poll отказывает для конкретной задачи — как сломанная развилка,
+    из-за которой раньше падал весь цикл `pump_decisions` (находка №1
+    повторного ревью, симметрично `FlakyVotesFeed` для pump_votes)."""
+
+    def __init__(self, *a, fail_issues=None, **kw):
+        super().__init__(*a, **kw)
+        self._fail_issues = fail_issues or set()
+
+    def post_poll(self, agent, poll, *, in_reply_to=None):
+        if any(f"#{issue}" in poll.text for issue in self._fail_issues):
+            raise RuntimeError("обрыв связи")
+        return super().post_poll(agent, poll, in_reply_to=in_reply_to)
 
 
 class OnceFailingFeed(FakeFeed):
@@ -314,32 +327,70 @@ def test_broken_poll_does_not_block_the_rest(tmp_path):
 
 
 def test_seen_mark_is_set_before_publish_and_rolled_back_on_failure(tmp_path):
-    """Находка №2 (критично): отметка «сделано» обязана стоять УЖЕ к
-    моменту вызова публикации (иначе отказ после физической отправки не
-    оставляет следа), а при отказе публикации — сниматься, чтобы развилка
-    не была потеряна навсегда."""
+    """Находка №2 (критично, первый круг правок): отметка «сделано» обязана
+    стоять УЖЕ к моменту вызова публикации (иначе отказ после физической
+    отправки не оставляет следа), а при отказе публикации — сниматься, чтобы
+    развилка не была потеряна навсегда.
+
+    Контракт изменился в повторном ревью (находка №1): pump_decisions больше
+    не поднимает исключение наверх, а ловит его поштучно и пишет причину в
+    `problems` — симметрично pump_votes/pump_cleanup. Раньше тест проверял
+    `pytest.raises(RuntimeError)`; теперь то же самое видно по `problems`."""
     m = Mapping(tmp_path / "m.db")
     key = f"decision:{PARKED.repo}:{PARKED.issue}:{PARKED.phase}"
     feed = SpyFailFeed(m, key)
+    problems: list[tuple[int, str]] = []
 
-    with pytest.raises(RuntimeError):
-        pump_decisions(feed, m, lambda: [PARKED])
+    made = pump_decisions(feed, m, lambda: [PARKED], problems)
 
+    assert made == 0
     assert feed.seen_at_call_time is True, "отметка обязана стоять ДО публикации"
     assert m.seen(key) is False, "после отказа отметка обязана быть снята"
+    assert [number for number, _ in problems] == [PARKED.issue]
     m.close()
 
 
 def test_retry_after_publish_failure_succeeds_without_losing_the_fork(tmp_path):
     m = Mapping(tmp_path / "m.db")
     feed = OnceFailingFeed()
+    problems: list[tuple[int, str]] = []
 
-    with pytest.raises(RuntimeError):
-        pump_decisions(feed, m, lambda: [PARKED])
+    assert pump_decisions(feed, m, lambda: [PARKED], problems) == 0
     assert feed.polls == []
+    assert len(problems) == 1
 
     assert pump_decisions(feed, m, lambda: [PARKED]) == 1
     assert len(feed.polls) == 1
+    m.close()
+
+
+def test_broken_decision_does_not_block_the_rest(tmp_path):
+    """Находка №1 повторного ревью (критично): у pump_decisions не было
+    поштучного try/except вокруг тела цикла — `forget_seen` и `raise`
+    прерывали весь `for`, и ни одна развилка после сломанной в этом заходе
+    не обрабатывалась. Ревьюер воспроизвёл это как две развилки, где
+    сломанная первой топит здоровую вторую.
+
+    Заодно проверяет находку №2 (мелочь): счётчик `made` обязан отражать
+    реально опубликованное, а не теряться при отказе на середине списка —
+    после исправления находки №1 это следует само собой из того, что `made`
+    инкрементируется только на успешных итерациях внутри продолжающегося
+    цикла."""
+    m = Mapping(tmp_path / "m.db")
+    broken = Parked(repo=REPO, issue=149, title="Промокод из ссылки", phase="classified")
+    healthy = Parked(repo=REPO, issue=151, title="Другая задача", phase="classified")
+    feed = FlakyPostPollFeed(fail_issues={149})
+    problems: list[tuple[int, str]] = []
+
+    made = pump_decisions(feed, m, lambda: [broken, healthy], problems)
+
+    assert made == 1, "здоровая развилка обязана быть опубликована и учтена"
+    assert len(feed.polls) == 1
+    _, poll, _ = feed.polls[0]
+    assert "#151" in poll.text, "опубликована обязана быть именно здоровая развилка"
+    assert [number for number, _ in problems] == [149]
+    key_broken = f"decision:{REPO}:149:classified"
+    assert m.seen(key_broken) is False, "отметка сломанной развилки обязана быть снята"
     m.close()
 
 
@@ -370,6 +421,31 @@ def test_pump_cleanup_marks_issue_cleaned_so_it_is_not_revisited(tmp_path):
     assert pump_cleanup(gh, lambda: touched, m.mark_cleaned) == 1
 
     assert m.decided_uncleaned() == [], "убранная задача не должна возвращаться в обход"
+    m.close()
+
+
+def test_vote_for_unknown_option_does_not_close_poll_and_is_named_in_problems(tmp_path):
+    """Находка №3 повторного ревью (важно): раньше ветка, где
+    `link.label_for(title)` вернул None (голос за заголовок, которого нет
+    среди вариантов опроса), закрывала опрос и шла дальше — решение
+    терялось молча, без следа. Теперь опрос остаётся открытым, причина
+    уходит в problems с номером задачи и полученным заголовком."""
+    m = Mapping(tmp_path / "m.db")
+    m.remember_poll("P1", "S1", REPO, 149, [
+        Choice("Разобрать аналитикой", "research-me"), Choice("Это баг", "bug-me"),
+    ])
+    feed = FakeFeed(votes={"P1": {"Опечатка в варианте": 1}})
+    gh = FakeGitHub()
+    problems: list[tuple[int, str]] = []
+
+    assert pump_votes(feed, m, gh, problems) == 0
+
+    assert gh.added == []
+    assert len(m.open_polls()) == 1, "опрос обязан остаться открытым — человек проголосовал"
+    assert [number for number, _ in problems] == [149]
+    assert "Опечатка в варианте" in problems[0][1], (
+        "причина обязана называть полученный заголовок"
+    )
     m.close()
 
 
