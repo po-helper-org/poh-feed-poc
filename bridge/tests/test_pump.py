@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from bridge.harness import Parked
 from bridge.mapping import Mapping
 from bridge.pump import publish_report, pump_cleanup, pump_decisions, pump_github, pump_votes
@@ -704,4 +706,32 @@ def test_partial_pass_replies_with_what_is_unproven(tmp_path: Path):
     assert "шаг 4 — браузер" in feed.posts[0][1]
     assert feed.polls == [], "опроса быть не должно"
     assert "Не проверял" in feed.media[0][1]
+    m.close()
+
+
+class FailingFollowUpFeed(FakeFeedMedia):
+    """Отчёт с вложением публикуется успешно, а продолжение-ответ падает —
+    как реальный обрыв связи ровно между двумя постами одного отчёта."""
+
+    def post(self, agent, text, *, spoiler=None, in_reply_to=None):
+        raise RuntimeError("обрыв связи")
+
+
+def test_follow_up_failure_carries_the_published_report_id(tmp_path: Path):
+    """Отчёт уже в ленте (M1), когда падает продолжение. Разбирающий
+    поломку не должен узнавать об этом сверкой вручную — id обязан быть в
+    самом отказе, а исходная причина — сохранена через `raise ... from`."""
+    feed, m = FailingFollowUpFeed(), Mapping(tmp_path / "m.db")
+    m.remember_thread("po-helper-org/poh-demo-checkout", 149, "S9")
+    shot = tmp_path / "a.png"
+    shot.write_bytes(b"\x89PNG")
+    with pytest.raises(RuntimeError) as excinfo:
+        publish_report(
+            feed, m, "po-helper-org/poh-demo-checkout", 149,
+            passed=4, total=5, seconds=96, blocked=["шаг 4 — браузер"], shots=[shot],
+        )
+    assert feed.media[0][0] == "howtodemo", "отчёт успел опубликоваться до отказа продолжения"
+    assert "M1" in str(excinfo.value), "id уже опубликованного отчёта обязан быть в отказе"
+    assert excinfo.value.__cause__ is not None
+    assert "обрыв связи" in str(excinfo.value.__cause__)
     m.close()

@@ -80,12 +80,47 @@ def render_artifact(title: str, words: int, body_md: str) -> tuple[str, str]:
     return f"{title} · {words} слов", body_md
 
 
+def unaccounted_sentences(passed: int, total: int, blocked: list[str]) -> list[str]:
+    """Расхождение `total - passed` обязано быть объяснено целиком, а не
+    частично. `blocked` — шаги, которые не исполнялись (например, нечем).
+    Остаток `total - passed - len(blocked)` — шаги, которые исполнялись и
+    ПРОВАЛИЛИСЬ. Это разные вещи: непроверенный шаг и провалившийся шаг
+    нельзя называть одним словом, иначе человек решит, что провала не было.
+    Если имён провалившихся шагов функции не передали (их и не передают —
+    сигнатура несёт только счётчики), об этом говорится словами прямо, а не
+    молчанием.
+
+    Общий код для `render_report` и текста продолжения в `publish_report`
+    (`bridge.pump`) — расхождение должно объясняться одинаково в обоих
+    местах.
+
+    Бросает `ValueError`, если арифметика не сходится
+    (`passed + len(blocked) > total`): это значит, что вызывающий передал
+    противоречивые числа, и молча принимать их нельзя.
+    """
+    if passed + len(blocked) > total:
+        raise ValueError(
+            "арифметика отчёта не сходится: "
+            f"passed={passed} + len(blocked)={len(blocked)} больше total={total}"
+        )
+    sentences = []
+    if blocked:
+        sentences.append("Не проверял: " + "; ".join(blocked) + ".")
+    failed = total - passed - len(blocked)
+    if failed > 0:
+        sentences.append(f"Провалившихся шагов: {failed} (имена не переданы).")
+    return sentences
+
+
 def render_report(passed: int, total: int, seconds: int, blocked: list[str]) -> str:
     """Отчёт приёмки. Незачтённые шаги обязаны быть названы словами:
-    пустая проверка неотличима от пройденной, если о ней промолчать."""
+    пустая проверка неотличима от пройденной, если о ней промолчать. Сюда
+    входят и непроверенные (`blocked`), и провалившиеся — молчание о любой
+    из двух категорий запрещено ровно тем же правилом."""
     text = f"Сценарий: {passed} из {total} за {seconds} с."
-    if blocked:
-        text += "\n\nНе проверял: " + "; ".join(blocked) + "."
+    sentences = unaccounted_sentences(passed, total, blocked)
+    if sentences:
+        text += "\n\n" + "\n".join(sentences)
     return text
 
 

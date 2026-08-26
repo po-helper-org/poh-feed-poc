@@ -76,6 +76,34 @@ def test_report_without_blocked_says_nothing_about_them():
     assert "Не проверял" not in render_report(passed=5, total=5, seconds=96, blocked=[])
 
 
+def test_report_explains_failed_steps_even_without_blocked():
+    """passed < total при пустом blocked — расхождение не объяснить одним
+    молчанием: пятый шаг не «не проверялся», он провалился, и об этом
+    обязаны сказать словами, раз имён у функции нет."""
+    text = render_report(passed=4, total=5, seconds=96, blocked=[])
+    assert "4 из 5" in text
+    assert "Не проверял" not in text, "провалившийся шаг — не то же самое, что непроверенный"
+    assert "1" in text
+    assert "имена не переданы" in text
+
+
+def test_report_separates_failed_from_blocked():
+    """passed < total при непустом blocked, где часть шагов провалилась, а
+    часть не проверялась вовсе — оба явления обязаны быть названы порознь,
+    одним словом их объединять нельзя."""
+    text = render_report(passed=3, total=6, seconds=40, blocked=["шаг 2 — сеть"])
+    assert "Не проверял: шаг 2 — сеть" in text
+    assert "имена не переданы" in text
+    assert "2" in text
+
+
+def test_report_rejects_inconsistent_arithmetic():
+    """passed + len(blocked) > total — вызывающий передал чушь, молча
+    принимать её нельзя."""
+    with pytest.raises(ValueError):
+        render_report(passed=5, total=5, seconds=96, blocked=["шаг 6 — призрак"])
+
+
 def test_incident_carries_evidence():
     text = render_incident(
         what="Стенд перепинован чужой сессией",

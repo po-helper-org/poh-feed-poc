@@ -3,7 +3,13 @@ from pathlib import Path
 
 from bridge.harness import stale_decision_labels
 from bridge.mapping import Mapping
-from bridge.render import question_for_phase, render_agent_reply, render_decision, render_report
+from bridge.render import (
+    question_for_phase,
+    render_agent_reply,
+    render_decision,
+    render_report,
+    unaccounted_sentences,
+)
 
 
 def pump_decisions(
@@ -283,20 +289,34 @@ def publish_report(
 
     Вызывается вручную агентом приёмки, а не циклом перекачки — поштучная
     обработка отказов здесь не нужна (нет соседних задач, которые отказ одной
-    не должен топить, как в pump_*). Отказ публикации уходит наверх как есть:
-    `feed.post_media`/`feed.post` уже заворачивают причину в `RuntimeError`."""
+    не должен топить, как в pump_*). Отказ публикации САМОГО отчёта уходит
+    наверх как есть: `feed.post_media` уже заворачивает причину в
+    `RuntimeError`, а до первого поста мост ничего не публиковал — терять
+    нечего.
+
+    Отказ ПРОДОЛЖЕНИЯ — другое дело: к этому моменту отчёт уже опубликован
+    и виден в ленте (`report_id`). Голый отказ `feed.post` его id не несёт,
+    и разбирающий поломку узнал бы о том, что отчёт всё же дошёл, только
+    сверкой вручную. Поэтому отказ продолжения перезаворачивается: id
+    опубликованного отчёта — в тексте, исходная причина — через
+    `raise ... from error`, а не потеряна."""
     parent = mapping.thread_for(repo, issue)
     text = render_report(passed=passed, total=total, seconds=seconds, blocked=blocked)
     report_id = feed.post_media("howtodemo", text, shots, in_reply_to=parent)
     if passed == total and not blocked:
         return report_id, None
-    unproven = "; ".join(blocked) if blocked else f"{total - passed} шаг(ов)"
-    follow_id = feed.post(
-        "howtodemo",
-        render_agent_reply(
-            body=f"Осталось непроверенным: {unproven}. Решение за тобой.",
-            reason="вердикт посчитан кодом, недостающие шаги названы поимённо",
-        ),
-        in_reply_to=report_id,
-    )
+    unproven = " ".join(unaccounted_sentences(passed, total, blocked))
+    try:
+        follow_id = feed.post(
+            "howtodemo",
+            render_agent_reply(
+                body=f"{unproven} Решение за тобой.",
+                reason="вердикт посчитан кодом, недостающие шаги названы поимённо",
+            ),
+            in_reply_to=report_id,
+        )
+    except Exception as error:
+        raise RuntimeError(
+            f"отчёт {report_id} опубликован, а продолжение к нему — нет: {error}"
+        ) from error
     return report_id, follow_id
