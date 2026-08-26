@@ -113,6 +113,29 @@ def test_decided_uncleaned_ignores_still_open_polls(tmp_path: Path):
     m.close()
 
 
+def test_undecided_count_counts_rows_without_decision(tmp_path: Path):
+    """Правка ревью №1 (задача 10): развилки, уведённые в эскалацию по
+    таймауту (decided_at пуст), должны быть посчитаны отдельно — иначе
+    отчёт о простое ни словом их не упомянет."""
+    m = Mapping(tmp_path / "m.db")
+    m.mark_posted("P1", 1000.0)
+    m.mark_decided("P1", 1360.0)  # решена — в счёт не идёт
+    m.mark_posted("P2", 2000.0)  # эскалирована по таймауту, ответа нет
+    m.mark_posted("P3", 3000.0)  # тоже без ответа
+
+    assert m.undecided_count() == 2
+    m.close()
+
+
+def test_undecided_count_zero_when_all_decided(tmp_path: Path):
+    m = Mapping(tmp_path / "m.db")
+    m.mark_posted("P1", 1000.0)
+    m.mark_decided("P1", 1360.0)
+
+    assert m.undecided_count() == 0
+    m.close()
+
+
 def test_mark_posted_repeat_keeps_decided_at_and_original_posted_at(tmp_path: Path):
     """Повторный mark_posted по тому же опросу не должен стирать decided_at.
 

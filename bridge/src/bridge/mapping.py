@@ -166,3 +166,16 @@ class Mapping:
                 "SELECT posted_at, decided_at FROM timing WHERE decided_at IS NOT NULL"
             ).fetchall()
         ]
+
+    def undecided_count(self) -> int:
+        """Число развилок, которые система увела в эскалацию по таймауту,
+        так и не дождавшись решения человека (`decided_at` пуст).
+
+        Без этого числа отчёт о простое (metrics.report) видит только
+        timings() — то есть только решённые развилки — и печатает
+        красивую медиану, ни словом не упоминая, что часть развилок
+        осталась без ответа вовсе."""
+        row = self._db.execute(
+            "SELECT COUNT(*) FROM timing WHERE decided_at IS NULL"
+        ).fetchone()
+        return int(row[0])
