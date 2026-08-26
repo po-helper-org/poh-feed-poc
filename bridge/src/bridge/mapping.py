@@ -41,6 +41,11 @@ class Mapping:
         self._db.executescript(SCHEMA)
         self._db.commit()
 
+    def close(self) -> None:
+        """Закрыть соединение с базой. Без этого под `pytest -W error`
+        всплывает ResourceWarning: unclosed database."""
+        self._db.close()
+
     def remember_thread(self, repo: str, issue: int, status_id: str) -> None:
         self._db.execute(
             "INSERT OR REPLACE INTO thread(repo, issue, status_id) VALUES (?,?,?)",
@@ -63,8 +68,11 @@ class Mapping:
             ensure_ascii=False,
         )
         self._db.execute(
-            "INSERT OR REPLACE INTO poll(poll_id,status_id,repo,issue,choices,closed)"
-            " VALUES (?,?,?,?,?,0)",
+            "INSERT INTO poll(poll_id,status_id,repo,issue,choices,closed)"
+            " VALUES (?,?,?,?,?,0)"
+            " ON CONFLICT(poll_id) DO UPDATE SET"
+            " status_id=excluded.status_id, repo=excluded.repo,"
+            " issue=excluded.issue, choices=excluded.choices",
             (poll_id, status_id, repo, issue, payload),
         )
         self._db.commit()
@@ -96,9 +104,13 @@ class Mapping:
         self._db.commit()
 
     def mark_posted(self, poll_id: str, when: float) -> None:
+        """Момент публикации развилки — первый обход фиксирует его, повторные
+        обходы того же цикла перекачки (задачи 6-7) не должны ни переносить
+        posted_at на последний обход, ни стирать уже проставленный
+        decided_at обратно в NULL."""
         self._db.execute(
-            "INSERT OR REPLACE INTO timing(poll_id, posted_at, decided_at)"
-            " VALUES (?,?,NULL)",
+            "INSERT INTO timing(poll_id, posted_at, decided_at) VALUES (?,?,NULL)"
+            " ON CONFLICT(poll_id) DO NOTHING",
             (poll_id, when),
         )
         self._db.commit()
