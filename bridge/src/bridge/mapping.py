@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS thread (
 CREATE TABLE IF NOT EXISTS poll (
   poll_id TEXT PRIMARY KEY, status_id TEXT NOT NULL,
   repo TEXT NOT NULL, issue INTEGER NOT NULL,
-  choices TEXT NOT NULL, closed INTEGER NOT NULL DEFAULT 0);
+  choices TEXT NOT NULL, closed INTEGER NOT NULL DEFAULT 0,
+  cleaned INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS seen (key TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS timing (
   poll_id TEXT PRIMARY KEY, posted_at REAL NOT NULL, decided_at REAL);
@@ -39,7 +40,18 @@ class Mapping:
     def __init__(self, path: Path):
         self._db = sqlite3.connect(path)
         self._db.executescript(SCHEMA)
+        self._migrate()
         self._db.commit()
+
+    def _migrate(self) -> None:
+        """`CREATE TABLE IF NOT EXISTS` создаёт `cleaned` только для новой
+        базы — уже существующие базы (созданные до задачи 7-ревью) получают
+        столбец здесь, а не молча теряют учёт уборки."""
+        cols = {row[1] for row in self._db.execute("PRAGMA table_info(poll)")}
+        if "cleaned" not in cols:
+            self._db.execute(
+                "ALTER TABLE poll ADD COLUMN cleaned INTEGER NOT NULL DEFAULT 0"
+            )
 
     def close(self) -> None:
         """Закрыть соединение с базой. Без этого под `pytest -W error`
@@ -93,6 +105,25 @@ class Mapping:
         self._db.execute("UPDATE poll SET closed=1 WHERE poll_id=?", (poll_id,))
         self._db.commit()
 
+    def decided_uncleaned(self) -> list[tuple[str, int]]:
+        """(repo, issue) с закрытым опросом, который уборка ещё не
+        проверяла. Без фильтра по `cleaned` цель уборки растёт без границ:
+        мост навсегда дёргал бы GitHub по каждой когда-либо решённой
+        задаче, даже если метка снята год назад."""
+        rows = self._db.execute(
+            "SELECT DISTINCT repo, issue FROM poll WHERE closed=1 AND cleaned=0"
+        ).fetchall()
+        return [(row[0], int(row[1])) for row in rows]
+
+    def mark_cleaned(self, repo: str, issue: int) -> None:
+        """Задача убрана — уборка по ней отработала (метка снята или снимать
+        было нечего). Больше в decided_uncleaned() не попадёт."""
+        self._db.execute(
+            "UPDATE poll SET cleaned=1 WHERE closed=1 AND repo=? AND issue=?",
+            (repo, issue),
+        )
+        self._db.commit()
+
     def seen(self, key: str) -> bool:
         return (
             self._db.execute("SELECT 1 FROM seen WHERE key=?", (key,)).fetchone()
@@ -101,6 +132,13 @@ class Mapping:
 
     def mark_seen(self, key: str) -> None:
         self._db.execute("INSERT OR IGNORE INTO seen(key) VALUES (?)", (key,))
+        self._db.commit()
+
+    def forget_seen(self, key: str) -> None:
+        """Снять отметку «сделано». Нужно pump_decisions: отметка там
+        ставится ДО публикации, и если публикация отказала, её надо снять —
+        иначе развилка, которую физически не задали, никогда не повторится."""
+        self._db.execute("DELETE FROM seen WHERE key=?", (key,))
         self._db.commit()
 
     def mark_posted(self, poll_id: str, when: float) -> None:

@@ -17,31 +17,45 @@ def main() -> int:
     once = "--once" in sys.argv
     while True:
         problems: list[tuple[int, str]] = []
+        made = sent = cleaned = 0
+
+        # Каждый из трёх циклов обёрнут отдельно: отказ одного не должен
+        # прятать проблемы, накопленные другими, и не должен мешать им
+        # отработать в этом же проходе.
         try:
             made = pump_decisions(
                 feed, mapping, lambda: github.parked(settings.repos, problems)
             )
-            sent = pump_votes(feed, mapping, github)
+        except Exception as error:
+            print(f"развилки: обход не удался: {error}", file=sys.stderr)
+
+        try:
+            sent = pump_votes(feed, mapping, github, problems)
+        except Exception as error:  # у pump_votes уже есть поштучный
+            # try/except внутри — сюда попадает только непредвиденный отказ
+            # самого цикла (например, mapping.open_polls()).
+            print(f"голоса: обход не удался: {error}", file=sys.stderr)
+
+        try:
             touched = [
                 (link.repo, link.issue) for link in mapping.open_polls()
-            ] + [(repo, issue) for repo, issue in _decided(mapping)]
-            cleaned = pump_cleanup(github, lambda: touched)
-            if made or sent or cleaned:
-                print(f"развилок: {made}, решений: {sent}, снято меток: {cleaned}")
-            # Задачи, которые разобрать не удалось, обязаны быть названы:
-            # молча пропущенная развилка — это работа, стоящая без причины.
-            for number, reason in problems:
-                print(f"задача #{number} пропущена: {reason}", file=sys.stderr)
-        except Exception as error:  # цикл не должен умирать от одного отказа
-            print(f"обход не удался: {error}", file=sys.stderr)
+            ] + mapping.decided_uncleaned()
+            cleaned = pump_cleanup(
+                github, lambda: touched, mapping.mark_cleaned, problems
+            )
+        except Exception as error:
+            print(f"уборка: обход не удался: {error}", file=sys.stderr)
+
+        if made or sent or cleaned:
+            print(f"развилок: {made}, решений: {sent}, снято меток: {cleaned}")
+        # Задачи, которые разобрать не удалось, обязаны быть названы:
+        # молча пропущенная развилка — это работа, стоящая без причины.
+        # Печатаем после всех трёх циклов и даже если один из них отказал —
+        # иначе причины, накопленные уже отработавшими циклами, терялись бы
+        # вместе с отказавшим.
+        for number, reason in problems:
+            print(f"задача #{number} пропущена: {reason}", file=sys.stderr)
+
         if once:
             return 0
         time.sleep(5)
-
-
-def _decided(mapping: Mapping) -> list[tuple[str, int]]:
-    """Задачи, по которым решение уже отправлено: у них могла залипнуть метка."""
-    rows = mapping._db.execute(
-        "SELECT DISTINCT repo, issue FROM poll WHERE closed=1"
-    ).fetchall()
-    return [(row[0], int(row[1])) for row in rows]

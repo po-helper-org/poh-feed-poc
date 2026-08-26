@@ -75,6 +75,44 @@ def test_remember_poll_does_not_reopen_closed_poll(tmp_path: Path):
     m.close()
 
 
+def test_forget_seen_clears_mark(tmp_path: Path):
+    """Правка ревью №2 (задача 7): pump_decisions ставит отметку «сделано» ДО
+    публикации и снимает её при отказе — для этого нужен forget_seen."""
+    m = Mapping(tmp_path / "m.db")
+    m.mark_seen("decision:x:1:classified")
+    assert m.seen("decision:x:1:classified") is True
+
+    m.forget_seen("decision:x:1:classified")
+
+    assert m.seen("decision:x:1:classified") is False
+    m.mark_seen("decision:x:1:classified")  # можно поставить снова
+    assert m.seen("decision:x:1:classified") is True
+    m.close()
+
+
+def test_decided_uncleaned_then_mark_cleaned_stops_returning_it(tmp_path: Path):
+    """Правка ревью №4 (задача 7): цель уборки не должна расти без границ —
+    once убрано, задача больше не возвращается в decided_uncleaned()."""
+    m = Mapping(tmp_path / "m.db")
+    m.remember_poll("P1", "S1", REPO, 149, CHOICES)
+    m.close_poll("P1")
+
+    assert m.decided_uncleaned() == [(REPO, 149)]
+
+    m.mark_cleaned(REPO, 149)
+
+    assert m.decided_uncleaned() == []
+    m.close()
+
+
+def test_decided_uncleaned_ignores_still_open_polls(tmp_path: Path):
+    m = Mapping(tmp_path / "m.db")
+    m.remember_poll("P1", "S1", REPO, 149, CHOICES)  # ещё не закрыт
+
+    assert m.decided_uncleaned() == []
+    m.close()
+
+
 def test_mark_posted_repeat_keeps_decided_at_and_original_posted_at(tmp_path: Path):
     """Повторный mark_posted по тому же опросу не должен стирать decided_at.
 
