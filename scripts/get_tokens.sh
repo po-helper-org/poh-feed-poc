@@ -27,7 +27,7 @@ set -euo pipefail
 BASE=http://127.0.0.1:8080
 ENV_FILE=.env
 
-# Существующие на этом стенде аккаунты заведены с паролем PoC-feed-2026! —
+# Существующие на этом стенде аккаунты заведены с паролем из FEED_ACCOUNT_PASSWORD —
 # подставляйте его, если не меняли сознательно.
 if [ -z "${FEED_ACCOUNT_PASSWORD:-}" ]; then
   echo "ОШИБКА: переменная окружения FEED_ACCOUNT_PASSWORD не задана." >&2
