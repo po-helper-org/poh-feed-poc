@@ -38,12 +38,21 @@ def pump_decisions(
     номером задачи — симметрично `pump_votes`/`pump_cleanup`.
     """
     made = 0
+    # Фазы, для которых вопроса нет. Молча пропустить такую задачу нельзя:
+    # человек её ждёт, метка `needs-human:triage` на ней висит, а в ленте она
+    # не появится НИКОГДА — и узнать об этом будет неоткуда. Первый живой
+    # прогон дал ровно это: 20 припаркованных задач, 1 развилка, 19 исчезли
+    # без единого слова. Называем сводкой, а не строкой на задачу: строка на
+    # задачу — это 19 одинаковых сообщений каждые 30 секунд, шум, который
+    # перестают читать, и тогда молчание возвращается другим путём.
+    unanswerable: dict[str, list[int]] = {}
     for parked in read_parked():
         key = f"decision:{parked.repo}:{parked.issue}:{parked.phase}"
         if mapping.seen(key):
             continue
         asked = question_for_phase(parked.phase)
         if asked is None:
+            unanswerable.setdefault(parked.phase, []).append(parked.issue)
             continue
         question, choices = asked
 
@@ -70,6 +79,15 @@ def pump_decisions(
                 ))
             continue
         made += 1
+    if unanswerable and problems is not None:
+        for phase, issues in sorted(unanswerable.items()):
+            shown = ", ".join(f"#{i}" for i in issues[:5])
+            more = f" и ещё {len(issues) - 5}" if len(issues) > 5 else ""
+            problems.append((
+                0,
+                f"фаза {phase!r}: вопроса нет, задачи ждут человека вне ленты "
+                f"({len(issues)}): {shown}{more}",
+            ))
     return made
 
 

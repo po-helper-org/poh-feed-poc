@@ -864,3 +864,24 @@ def test_follow_up_failure_carries_the_published_report_id(tmp_path: Path):
     assert excinfo.value.__cause__ is not None
     assert "обрыв связи" in str(excinfo.value.__cause__)
     m.close()
+
+
+def test_pump_decisions_names_phases_without_question(tmp_path):
+    """Задача с фазой, для которой вопроса нет, не появится в ленте никогда.
+    Молча пропустить её значит оставить человека ждать без причины — первый
+    живой прогон дал 20 припаркованных задач, 1 развилку и 19 исчезнувших
+    без единого слова."""
+    parked = [
+        Parked(repo="o/r", issue=1, title="a", phase="failed"),
+        Parked(repo="o/r", issue=2, title="b", phase="escalated"),
+        Parked(repo="o/r", issue=3, title="c", phase="failed"),
+    ]
+    problems: list[tuple[int, str]] = []
+    m = Mapping(tmp_path / "m.db")
+    made = pump_decisions(FakeFeed(), m, lambda: parked, problems)
+    m.close()
+
+    assert made == 0
+    text = " ".join(reason for _, reason in problems)
+    assert "failed" in text and "escalated" in text
+    assert "#1" in text and "#2" in text and "#3" in text
