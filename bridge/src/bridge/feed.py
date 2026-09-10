@@ -2,6 +2,18 @@ from pathlib import Path
 from bridge.render import POLL_LIFETIME_SECONDS, PollPost
 
 
+# Видимость постов ленты. Путь сюда занял три шага, и каждый — живая проверка:
+#   private  — виден только подписчикам, подписка агента на агента уходит в
+#              ожидание одобрения, и по такому посту нельзя ни прочитать
+#              статус, ни проголосовать: сервер отвечает 404 на оба;
+#   unlisted — голосуется, но НЕ попадает ни в публичную ленту инстанса, ни в
+#              ленты по хэштегу. Панель шорткатов, собранная на тегах, при
+#              такой видимости пуста;
+#   public   — работает всё. Наружу при этом ничего не уходит: инстанс слушает
+#              петлю, федерация закрыта, публичная лента анонимам не отдаётся.
+VISIBILITY = "public"
+
+
 class Feed:
     """Обёртка над Mastodon.py. Один клиент на агента — каждый постит от себя."""
 
@@ -27,7 +39,7 @@ class Feed:
         self, agent: str, text: str, *, spoiler: str | None = None,
         in_reply_to: str | None = None,
     ) -> str:
-        kw = {"visibility": "unlisted", "content_type": "text/markdown"}
+        kw = {"visibility": VISIBILITY, "content_type": "text/markdown"}
         if spoiler:
             kw["spoiler_text"] = spoiler
         if in_reply_to:
@@ -54,7 +66,7 @@ class Feed:
             made = client.make_poll(
                 poll.options, expires_in=poll.expires_in or POLL_LIFETIME_SECONDS
             )
-            kw = {"visibility": "unlisted", "poll": made}
+            kw = {"visibility": VISIBILITY, "poll": made}
             if in_reply_to:
                 kw["in_reply_to_id"] = in_reply_to
             result = client.status_post(poll.text, **kw)
@@ -80,7 +92,7 @@ class Feed:
             ids = [
                 client.media_post(str(p), description=p.stem)["id"] for p in files
             ]
-            kw = {"visibility": "unlisted", "media_ids": ids}
+            kw = {"visibility": VISIBILITY, "media_ids": ids}
             if in_reply_to:
                 kw["in_reply_to_id"] = in_reply_to
             return str(client.status_post(text, **kw)["id"])

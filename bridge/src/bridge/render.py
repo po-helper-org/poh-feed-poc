@@ -65,6 +65,16 @@ def question_for_phase(phase: str) -> tuple[str, list[Choice]] | None:
     return QUESTION_BY_PHASE.get(phase)
 
 
+# Хэштег типа события. На нём держится панель шорткатов: список Mastodon —
+# это набор АККАУНТОВ, а «ждут решения» — срез по смыслу, а не по автору.
+# Выразить такой срез можно только тегом.
+TAGS = {
+    "decision": "#развилка",
+    "report": "#приёмка",
+    "event": "#задача",
+}
+
+
 def _short_repo(repo: str) -> str:
     return repo.split("/")[-1]
 
@@ -95,7 +105,9 @@ def render_decision(
         "нельзя."
     )
     lines.append("")
-    lines.append(f"{_short_repo(repo)} · #{issue}")
+    # Тег типа события идёт последней строкой: он для панели, а не для чтения.
+    # Номер задачи тегом не станет — чисто цифровые хэштеги не распознаются.
+    lines.append(f"{_short_repo(repo)} · #{issue}  {TAGS['decision']}")
     return PollPost(
         text="\n".join(lines), options=[c.title for c in choices],
         expires_in=POLL_LIFETIME_SECONDS,
@@ -139,7 +151,7 @@ def render_report(passed: int, total: int, seconds: int, blocked: list[str]) -> 
     пустая проверка неотличима от пройденной, если о ней промолчать. Сюда
     входят и непроверенные (`blocked`), и провалившиеся — молчание о любой
     из двух категорий запрещено ровно тем же правилом."""
-    text = f"Сценарий: {passed} из {total} за {seconds} с."
+    text = f"Сценарий: {passed} из {total} за {seconds} с.  {TAGS['report']}"
     sentences = unaccounted_sentences(passed, total, blocked)
     if sentences:
         text += "\n\n" + "\n".join(sentences)

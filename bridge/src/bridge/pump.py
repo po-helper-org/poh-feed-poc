@@ -4,6 +4,7 @@ from pathlib import Path
 from bridge.harness import is_parked, phase_of, stale_decision_labels
 from bridge.mapping import Mapping
 from bridge.render import (
+    TAGS,
     question_for_phase,
     render_agent_reply,
     render_decision,
@@ -252,7 +253,8 @@ def pump_github(
                 parent = mapping.thread_for(repo, number)
                 if parent is None:
                     text = (
-                        f"{issue['title']}\n\n{repo.split('/')[-1]} · #{number}"
+                        f"{issue['title']}\n\n"
+                        f"{repo.split('/')[-1]} · #{number}  {TAGS['event']}"
                     )
                     status_id = feed.post("issue_agent", text)
                     mapping.remember_thread(repo, number, status_id)

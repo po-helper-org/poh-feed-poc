@@ -1,6 +1,7 @@
 import pytest
 
 from bridge.render import (
+    TAGS,
     POLL_LIFETIME_SECONDS, question_for_phase, render_decision,
     render_report, render_agent_reply,
 )
@@ -117,3 +118,23 @@ def test_agent_reply_requires_reason():
     assert "Беру в работу" in text and "почему: подписка на приёмку" in text
     with pytest.raises(ValueError):
         render_agent_reply(body="Беру", reason="")
+
+
+def test_decision_carries_its_event_tag():
+    """Тег типа события — опора панели шорткатов: список Mastodon это набор
+    аккаунтов, а «ждут решения» — срез по смыслу, выразимый только тегом."""
+    question, choices = question_for_phase("classified")
+    post = render_decision(repo=REPO, issue=149, question=question, choices=choices)
+    assert TAGS["decision"] in post.text
+
+
+def test_report_carries_its_event_tag():
+    assert TAGS["report"] in render_report(passed=5, total=5, seconds=96, blocked=[])
+
+
+def test_event_tags_are_not_purely_numeric():
+    """Чисто цифровой хэштег сервер тегом не считает — номер задачи в тег не
+    превратится, и это защищает от ложных срезов вроде «#149»."""
+    for tag in TAGS.values():
+        assert tag.startswith("#")
+        assert not tag[1:].isdigit()

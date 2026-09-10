@@ -46,15 +46,22 @@ def feed():
     return Feed(clients=clients), clients
 
 
-def test_post_is_unlisted_not_private(feed):
-    """`private` виден только подписчикам, а подписка агента на агента уходит в
-    ожидание одобрения — по такому посту нельзя даже проголосовать (404)."""
+def test_post_is_public_not_unlisted(feed):
+    """Путь к этой видимости — три живые проверки.
+
+    `private` виден только подписчикам, а подписка агента на агента уходит в
+    ожидание одобрения: по такому посту нельзя ни прочитать статус, ни
+    проголосовать — сервер отвечает 404 на оба.
+
+    `unlisted` голосуется, но НЕ попадает ни в публичную ленту инстанса, ни в
+    ленты по хэштегу: панель шорткатов, собранная на тегах, остаётся пустой.
+    """
     f, clients = feed
     sid = f.post("issue_agent", "привет")
     assert sid == "101"
     name, status, kw = clients["issue_agent"].calls[0]
     assert status == "привет"
-    assert kw["visibility"] == "unlisted"
+    assert kw["visibility"] == "public"
 
 
 def test_post_passes_spoiler_and_markdown(feed):
@@ -110,7 +117,7 @@ def test_post_media_passes_ids_visibility_and_paths_as_strings(feed, tmp_path: P
     assert calls[1] == ("media_post", str(b), "лог")
     name, status, kw = calls[2]
     assert name == "status_post" and status == "отчёт"
-    assert kw["visibility"] == "unlisted"
+    assert kw["visibility"] == "public"
     assert kw["media_ids"] == ["M101", "M102"]
     assert sid == "103"
 
