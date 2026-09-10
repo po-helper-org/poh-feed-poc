@@ -1,4 +1,47 @@
+# Два имени намеренно.
+#
+# feed.localhost — исходное имя инстанса. macOS сам поддомены *.localhost не
+# резолвит, поэтому оно требует записи в /etc/hosts.
+#
+# localhost — резолвится всегда, без правки системы.
+#
+# Phanpy принудительно переписывает адрес инстанса на https, поэтому простой
+# HTTP на 8080 ему не годится: регистрация приложения уходит по TLS и падает
+# с ERR_SSL_PROTOCOL_ERROR.
+#
+# Access-Control-Allow-Private-Network — разрешение браузеру ходить с
+# публичного источника (phanpy.social) на локальный адрес. Без него Chrome
+# режет запрос с ERR_BLOCKED_BY_CLIENT ещё до отправки. Это ослабление
+# защиты браузера, оправданное только тем, что инстанс слушает петлю и
+# ничего наружу не отдаёт.
+
+(gts) {
+	tls internal
+	@preflight method OPTIONS
+	handle @preflight {
+		header Access-Control-Allow-Origin "{header.Origin}"
+		header Access-Control-Allow-Private-Network "true"
+		header Access-Control-Allow-Methods "GET, POST, PATCH, PUT, DELETE, OPTIONS"
+		header Access-Control-Allow-Headers "Authorization, Content-Type, Idempotency-Key"
+		header Access-Control-Max-Age "86400"
+		respond 204
+	}
+	header Access-Control-Allow-Private-Network "true"
+	reverse_proxy feed:8080
+}
+
 https://feed.localhost {
-  tls internal
-  reverse_proxy feed:8080
+	import gts
+}
+
+https://localhost {
+	import gts
+}
+
+# feed.localtest.me — публичное имя, которое DNS отдаёт как 127.0.0.1.
+# Нужно потому, что Phanpy требует от адреса инстанса домен С ТОЧКОЙ:
+# «localhost» он доменом не считает и молча подставляет чужую подсказку.
+# Правки /etc/hosts при этом не требуется.
+https://feed.localtest.me {
+	import gts
 }

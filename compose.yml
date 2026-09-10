@@ -30,7 +30,10 @@ services:
     container_name: poh-feed-tls
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8443:443"
+      # Phanpy не принимает порт в поле адреса сервера — инстанс обязан
+      # стоять на стандартном 443. Порт ниже 1024 биндит демон Docker,
+      # пароль пользователя для этого не нужен.
+      - "127.0.0.1:443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./gotosocial/caddy:/data
