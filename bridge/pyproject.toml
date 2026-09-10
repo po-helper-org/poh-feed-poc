@@ -1,0 +1,21 @@
+[project]
+name = "poh-feed-bridge"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "Mastodon.py>=2.0",
+  "PyGithub>=2.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+feed-bridge = "bridge.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

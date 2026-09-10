@@ -1,0 +1,49 @@
+services:
+  feed:
+    image: superseriousbusiness/gotosocial:0.21.2
+    container_name: poh-feed
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./gotosocial/config.yaml:/gotosocial/config.yaml:ro
+      # База в томе Docker, а НЕ пробросом с macOS: SQLite с отображением в
+      # память поверх проброса хоста роняет сервер ошибкой шины (SIGBUS) под
+      # потоком записей. Проверено: до переноса падал дважды за час.
+      - poh_feed_data:/gotosocial/storage
+    environment:
+      GTS_CONFIG_PATH: /gotosocial/config.yaml
+    # 512 МБ не хватало: под потоком публикаций сервер падал с ошибкой шины
+    # и переполнением стека, перезапускался и рвал перенос на середине.
+    mem_limit: 1g
+
+  client:
+    image: skobkin/phanpy-docker:2026.08.08.e6a2887
+    container_name: poh-feed-client
+    restart: unless-stopped
+    ports:
+      # ВНИМАНИЕ: 127.0.0.1:8081 занят посторонним контейнером на этой машине
+      # (profkart_phpmyadmin, слушает 0.0.0.0:8081) — не наш проект, не трогаем.
+      # Временно опубликовано на 8083, см. отчёт task-1-report.md.
+      - "127.0.0.1:8083:80"
+    mem_limit: 64m
+
+  # Phanpy общается только по https. Caddy терминирует TLS с самоподписанным
+  # внутренним сертификатом и проксирует на feed:8080 (см. task-1-report.md).
+  tls:
+    image: caddy:2-alpine
+    container_name: poh-feed-tls
+    restart: unless-stopped
+    ports:
+      # Phanpy не принимает порт в поле адреса сервера — инстанс обязан
+      # стоять на стандартном 443. Порт ниже 1024 биндит демон Docker,
+      # пароль пользователя для этого не нужен.
+      - "127.0.0.1:443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./gotosocial/caddy:/data
+    mem_limit: 64m
+
+volumes:
+  poh_feed_data:
+    external: true

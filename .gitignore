@@ -1,7 +1,11 @@
 gotosocial/data/
+gotosocial/caddy/
+caddy-root.crt
 bridge/.venv/
-bridge/*.egg-info/
+bridge/**/*.egg-info/
 __pycache__/
 *.db
 .env
 .superpowers/
+gotosocial/data.backup-*/
+telegram-feed-seen.json
