@@ -56,7 +56,14 @@ echo "client_id=$CID"
 
 OBTAINED=""
 
-for a in issue_agent openhands pr_agent howtodemo delivery harness; do
+# Список учёток можно передать аргументами — так добавляются учётки-источники
+# (по одной на чат Telegram), не трогая набор агентов по умолчанию.
+ACCOUNTS=("$@")
+if [ ${#ACCOUNTS[@]} -eq 0 ]; then
+  ACCOUNTS=(issue_agent openhands pr_agent howtodemo delivery harness)
+fi
+
+for a in "${ACCOUNTS[@]}"; do
   echo "== Токен для $a =="
 
   # 1) неавторизованная сессия
