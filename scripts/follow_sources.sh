@@ -68,4 +68,18 @@ except Exception: print("")')
 done
 
 echo
-echo "Готово. Домашняя лента: http://127.0.0.1:8083/#/"
+echo "== Проверка домашней ленты =="
+# Проверяем делом, а не утверждением: подписка могла уйти в ожидание
+# одобрения, и лента осталась бы пустой без единого сообщения о причине.
+COUNT=$(curl -sS "$BASE/api/v1/timelines/home?limit=40" -H "Authorization: Bearer $TOKEN" \
+  | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')
+if [ "$COUNT" -gt 0 ]; then
+  echo "  в домашней ленте постов: $COUNT"
+  echo
+  echo "Готово. Открывайте: http://127.0.0.1:8083/#/"
+else
+  echo "  ПРОВАЛ: домашняя лента пуста." >&2
+  echo "  Проверьте, не ждут ли подписки одобрения: закрытая учётка-источник" >&2
+  echo "  принимает подписку только вручную." >&2
+  exit 1
+fi
