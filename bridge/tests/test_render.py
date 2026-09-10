@@ -2,6 +2,7 @@ import pytest
 
 from bridge.render import (
     TAGS,
+    TAG_PREFIX,
     POLL_LIFETIME_SECONDS, question_for_phase, render_decision,
     render_report, render_agent_reply,
 )
@@ -138,3 +139,12 @@ def test_event_tags_are_not_purely_numeric():
     for tag in TAGS.values():
         assert tag.startswith("#")
         assert not tag[1:].isdigit()
+
+
+def test_system_tags_are_prefixed():
+    """Пространство тегов общее с источниками: каналы Telegram размечают посты
+    сами. Без префикса чужой пост со словом «задача» попал бы в наш срез, а
+    пересечь срез по тегу со списком источника нельзя — разобраться было бы
+    неоткуда."""
+    for tag in TAGS.values():
+        assert tag.startswith(f"#{TAG_PREFIX}"), tag
