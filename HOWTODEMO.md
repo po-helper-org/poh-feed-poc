@@ -18,7 +18,7 @@
 |---|---|
 | Где крутится | ноутбук, `~/projects/poh-org/poh-feed-poc` |
 | Лента | GoToSocial `0.21.2`, API `http://127.0.0.1:8080` |
-| Клиент | Phanpy `http://127.0.0.1:8083`, инстанс `https://feed.localhost:8443` |
+| Клиент | Phanpy `http://127.0.0.1:8083`, инстанс `feed.localtest.me` |
 | Мост | `bridge`, Python |
 | Связь с системой | **только GitHub API** |
 | Изменений в системе | **ноль** |
@@ -112,8 +112,17 @@ docker exec poh-feed /gotosocial/gotosocial --config-path /gotosocial/config.yam
 акте 5.
 
 **8. `ГЛАЗАМИ` Инструменты работают так, как задумано.**
-Открыть `http://127.0.0.1:8083`, указать инстанс `feed.localhost:8443`, войти как
-`aleks@feed.local`, найти три поста из шага 7.
+Открыть `http://127.0.0.1:8083/#/login?instance=feed.localtest.me`, нажать
+«Continue with feed.localtest.me», войти как `aleks@feed.local`, найти три поста
+из шага 7.
+
+Прежде чем идти сюда, прогнать `./tests/test_login_e2e.sh` — он проверяет всю
+цепочку до формы ввода пароля и называет поимённо, что сломано, если сломано.
+
+> **Через `phanpy.social` это не работает и работать не будет.** Chrome режет
+> запросы с публичного источника на петлю (`ERR_BLOCKED_BY_CLIENT`), и заголовок
+> `Access-Control-Allow-Private-Network` этого не снимает. Клиент обязан быть
+> локальным.
 
 Ожидаемо:
 - опрос показан вариантами, голос принимается, счётчик растёт;
