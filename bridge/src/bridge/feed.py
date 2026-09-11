@@ -1,4 +1,5 @@
 from pathlib import Path
+from bridge.labels import Label, load_labels, with_labels
 from bridge.render import POLL_LIFETIME_SECONDS, PollPost
 
 
@@ -17,8 +18,17 @@ VISIBILITY = "public"
 class Feed:
     """Обёртка над Mastodon.py. Один клиент на агента — каждый постит от себя."""
 
-    def __init__(self, clients: dict[str, object]):
+    def __init__(self, clients: dict[str, object], labels: list[Label] | None = None):
         self._clients = clients
+        # Метки ставятся ЗДЕСЬ, в единственной точке, через которую текст
+        # уходит в ленту, — а не в каждом вызывающем. Пост с опросом или
+        # вложением потом безопасно не перемаркировать (правка без повтора
+        # опроса убивает опрос — проверено), поэтому при публикации метки
+        # обязаны стоять сразу.
+        self._labels = labels or []
+
+    def _labeled(self, agent: str, text: str) -> str:
+        return with_labels(self._labels, agent, text)
 
     @staticmethod
     def from_settings(settings) -> "Feed":
@@ -46,7 +56,7 @@ class Feed:
             kw["in_reply_to_id"] = in_reply_to
         client = self._client(agent)
         try:
-            return str(client.status_post(text, **kw)["id"])
+            return str(client.status_post(self._labeled(agent, text), **kw)["id"])
         except Exception as error:
             raise RuntimeError(
                 f"лента: пост от агента {agent!r} не удался: {error}"
@@ -69,7 +79,7 @@ class Feed:
             kw = {"visibility": VISIBILITY, "poll": made}
             if in_reply_to:
                 kw["in_reply_to_id"] = in_reply_to
-            result = client.status_post(poll.text, **kw)
+            result = client.status_post(self._labeled(agent, poll.text), **kw)
             return str(result["id"]), str(result["poll"]["id"])
         except Exception as error:
             raise RuntimeError(
@@ -95,7 +105,7 @@ class Feed:
             kw = {"visibility": VISIBILITY, "media_ids": ids}
             if in_reply_to:
                 kw["in_reply_to_id"] = in_reply_to
-            return str(client.status_post(text, **kw)["id"])
+            return str(client.status_post(self._labeled(agent, text), **kw)["id"])
         except Exception as error:
             raise RuntimeError(
                 f"лента: вложение от агента {agent!r} не удалось опубликовать: "

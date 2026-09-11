@@ -22,6 +22,7 @@ class Settings:
     github_token: str
     repos: tuple[str, ...]
     cycle_seconds: int
+    labels_file: Path | None
 
     @staticmethod
     def load() -> "Settings":
@@ -78,4 +79,7 @@ class Settings:
             github_token=github_token,
             repos=repos,
             cycle_seconds=cycle_seconds,
+            # Метки не обязательны: без файла лента ведётся без них. Путь один
+            # на всех писателей — тот же, что читает плагин dsh.
+            labels_file=Path(os.environ["LABELS_FILE"]) if os.environ.get("LABELS_FILE") else None,
         )

@@ -26,9 +26,16 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Движок меток — общий с мостом, один на всех писателей ленты.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bridge" / "src"))
+from bridge.labels import load_labels, with_labels  # noqa: E402
+
 FEED = os.environ.get("FEED_URL", "http://127.0.0.1:8080")
 BURST_SECONDS = int(os.environ.get("DELAY_BUDGET_SEC", "300"))
 SEEN_FILE = Path(os.environ.get("TG_FEED_SEEN", "telegram-feed-seen.json"))
+# Файл меток лежит рядом с базой коллектора — в том же каталоге, который
+# читает плагин dsh. Один путь на всех, кто пишет в ленту.
+LABELS_FILE = Path(os.environ["LABELS_FILE"]) if os.environ.get("LABELS_FILE") else None
 
 # Чат Telegram -> учётка ленты. Одна учётка на чат: в ленте автором поста
 # становится источник, как в Threads автором становится человек.
@@ -152,6 +159,11 @@ def main():
         "select * from items order by chat_title, sent_at")]
     con.close()
 
+    # Сломанный файл меток роняет перенос ДО первой публикации: иначе посты
+    # ушли бы без меток молча, а перемаркировать те, что с вложениями,
+    # потом нельзя.
+    labels = load_labels(LABELS_FILE) if LABELS_FILE else []
+
     tokens, published, skipped = {}, 0, 0
     for b in bursts(rows):
         account = ACCOUNTS.get(b["chat_title"])
@@ -170,7 +182,7 @@ def main():
                 method="PATCH")
         when = datetime.fromtimestamp(seconds(b["first_at"]), tz=timezone.utc)
         api("/api/v1/statuses", tokens[user], {
-            "status": render(b),
+            "status": with_labels(labels, user, render(b)),
             "visibility": "public",
             "spoiler_text": "",
             "language": "ru",

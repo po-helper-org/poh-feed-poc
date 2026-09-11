@@ -225,3 +225,37 @@ def test_votes_failure_is_wrapped_with_poll_id_and_agent_context():
     with pytest.raises(RuntimeError, match="P101") as excinfo:
         f.votes("P101")
     assert "сеть легла" in str(excinfo.value.__cause__)
+
+
+def test_feed_labels_every_publication_path(tmp_path):
+    """Метка ставится в единственной точке выхода текста в ленту — во всех
+    трёх способах публикации, включая опрос и вложение: их потом безопасно
+    не перемаркировать."""
+    from pathlib import Path
+
+    from bridge.feed import Feed
+    from bridge.labels import parse_labels
+    from bridge.render import PollPost
+
+    class Client:
+        def __init__(self):
+            self.texts = []
+
+        def status_post(self, text, **kw):
+            self.texts.append(text)
+            return {"id": "1", "poll": {"id": "p"}}
+
+        def make_poll(self, options, expires_in):
+            return {"options": options}
+
+        def media_post(self, path, description):
+            return {"id": "m"}
+
+    client = Client()
+    labels = parse_labels({"labels": [{"id": "разработка", "rules": [{"account": "openhands"}]}]})
+    feed = Feed({"openhands": client}, labels)
+    feed.post("openhands", "текст")
+    feed.post_poll("openhands", PollPost(text="вопрос", options=["а", "б"], expires_in=100))
+    shot = tmp_path / "s.png"; shot.write_bytes(b"x")
+    feed.post_media("openhands", "отчёт", [Path(shot)])
+    assert [t.endswith("#разработка") for t in client.texts] == [True, True, True]
