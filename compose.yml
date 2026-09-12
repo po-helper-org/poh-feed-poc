@@ -27,6 +27,11 @@ services:
       # Временно опубликовано на 8083, см. отчёт task-1-report.md.
       - "127.0.0.1:8083:80"
     mem_limit: 64m
+    volumes:
+      # Посев входа для фрейма dsh — см. phanpy/seed.html. Только чтение: клиент
+      # ничего туда не пишет, а nginx без этого файла отдал бы на /seed.html
+      # index.html клиента (SPA-fallback) с кодом 200 — и посев молча не сработал бы.
+      - ./phanpy/seed.html:/usr/share/nginx/html/seed.html:ro
 
   # Phanpy общается только по https. Caddy терминирует TLS с самоподписанным
   # внутренним сертификатом и проксирует на feed:8080 (см. task-1-report.md).

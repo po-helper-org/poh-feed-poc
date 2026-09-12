@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>вход в ленту</title>
+<!--
+  Посев входа для клиента ленты (Phanpy). Отдаётся тем же nginx, что и клиент,
+  потому что писать в localStorage клиента может только страница его origin —
+  а именно там Phanpy держит вход: accounts = [{info, instanceURL, accessToken,
+  lastAccessedAt}] и currentAccount. Страница входа инстанса во фрейме не
+  открывается вовсе (x-frame-options: DENY), поэтому фрейм dsh грузит этот файл
+  с готовой записью во ФРАГМЕНТЕ адреса — до сервера фрагмент не доходит.
+
+  Формат фрагмента: base64 от UTF-8 JSON {accounts, currentAccount, to}.
+  После записи — замена адреса на `to` (по умолчанию главная): документ
+  становится самим клиентом, и он читает вход при старте, как после OAuth.
+-->
+<style>body{font:14px -apple-system,system-ui,sans-serif;color:#888;padding:16px}</style>
+</head>
+<body>
+<script>
+(function () {
+  try {
+    var raw = location.hash.slice(1);
+    if (!raw) throw new Error('пустой фрагмент');
+    var json = decodeURIComponent(escape(atob(raw)));
+    var seed = JSON.parse(json);
+    if (typeof seed.accounts !== 'string' || typeof seed.currentAccount !== 'string') throw new Error('нет accounts/currentAccount');
+    localStorage.setItem('accounts', seed.accounts);
+    localStorage.setItem('currentAccount', seed.currentAccount);
+    try { sessionStorage.setItem('currentAccount', seed.currentAccount); } catch (e) {}
+    var to = typeof seed.to === 'string' && seed.to.charAt(0) === '/' ? seed.to : '/#/';
+    location.replace(to);
+  } catch (e) {
+    document.body.textContent = 'вход не посеян: ' + e.message;
+  }
+})();
+</script>
+</body>
+</html>
