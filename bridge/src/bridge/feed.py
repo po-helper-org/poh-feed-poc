@@ -1,5 +1,8 @@
 from pathlib import Path
-from bridge.labels import Label, load_labels, with_labels
+import sys
+
+from bridge.judge import JudgeError, LlmJudge
+from bridge.labels import Judge, Label, load_labels, needs_judge, with_labels
 from bridge.render import POLL_LIFETIME_SECONDS, PollPost
 
 
@@ -18,8 +21,12 @@ VISIBILITY = "public"
 class Feed:
     """Обёртка над Mastodon.py. Один клиент на агента — каждый постит от себя."""
 
-    def __init__(self, clients: dict[str, object], labels: list[Label] | None = None):
+    def __init__(
+        self, clients: dict[str, object], labels: list[Label] | None = None,
+        judge: Judge | None = None,
+    ):
         self._clients = clients
+        self._judge = judge
         # Метки ставятся ЗДЕСЬ, в единственной точке, через которую текст
         # уходит в ленту, — а не в каждом вызывающем. Пост с опросом или
         # вложением потом безопасно не перемаркировать (правка без повтора
@@ -28,7 +35,14 @@ class Feed:
         self._labels = labels or []
 
     def _labeled(self, agent: str, text: str) -> str:
-        return with_labels(self._labels, agent, text)
+        try:
+            return with_labels(self._labels, agent, text, judge=self._judge)
+        except JudgeError as error:
+            # Модель не ответила — пост всё равно уходит, но без промт-меток и
+            # с криком: ответ не закэширован, перемаркировка спросит заново.
+            print(f"метки: судья отказал, пост от {agent!r} уходит без промт-меток: {error}",
+                  file=sys.stderr)
+            return with_labels(self._labels, agent, text)
 
     @staticmethod
     def from_settings(settings) -> "Feed":

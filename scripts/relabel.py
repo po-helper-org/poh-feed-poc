@@ -33,7 +33,8 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bridge" / "src"))
-from bridge.labels import labels_for, load_labels, strip_label_tags  # noqa: E402
+from bridge.judge import JudgeError, LlmJudge  # noqa: E402
+from bridge.labels import labels_for, load_labels, needs_judge, strip_label_tags  # noqa: E402
 
 FEED = os.environ.get("FEED_URL", "http://127.0.0.1:8080")
 HUMAN = os.environ.get("FEED_HUMAN", "aleks")
@@ -103,6 +104,10 @@ def main() -> int:
     if not labels:
         sys.exit(f"в {labels_file} нет ни одной метки — нечего ставить")
     label_ids = {label.id for label in labels}
+    judge = LlmJudge.from_env(Path(labels_file).with_name("labels-judgments.json"))
+    if needs_judge(labels) and judge is None:
+        sys.exit(f"метки {needs_judge(labels)} требуют модели (правило prompt): задайте "
+                 "LABELS_LLM_BASE_URL, LABELS_LLM_API_KEY, LABELS_LLM_MODEL")
     accounts = own_accounts()
     if not accounts:
         sys.exit("нет ни одного FEED_TOKEN_* в окружении — править нечем")
@@ -122,7 +127,11 @@ def main() -> int:
         for status in statuses_of(token, me["id"], args.limit):
             text = plain(status["content"])
             current_tags = {t["name"].lower() for t in status.get("tags", [])}
-            wanted = labels_for(labels, user, text, current_tags)
+            try:
+                wanted = labels_for(labels, user, text, current_tags, judge=judge)
+            except JudgeError as error:
+                failed.append((f"{user} {status['id']}", f"судья: {error}"))
+                continue
             for l in wanted:
                 per_label[l] += 1
             have = current_tags & label_ids
@@ -138,7 +147,8 @@ def main() -> int:
     for l in labels:
         print(f"  {l.title:<14} #{l.id:<14} {per_label[l.id]}")
     print(f"\nбез изменений: {unchanged}; править: {len(to_edit)}; "
-          f"с опросом/вложением — нельзя: {len(untouchable)}")
+          f"с опросом/вложением — нельзя: {len(untouchable)}"
+          + (f"; вопросов модели: {judge.asked}" if judge else ""))
     for user, sid, missing in untouchable[:8]:
         print(f"  не тронут @{user} {sid}: не хватает {missing}")
     if len(untouchable) > 8:

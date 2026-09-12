@@ -12,6 +12,15 @@
     tag       на посте уже стоит тег (`контур_приёмка`, или чужой из канала)
     contains  подстрока в тексте без учёта регистра
     regex     регулярное выражение, без учёта регистра — на крайний случай
+    prompt    описание для модели: «переписка с партнёром MTS Live: созвоны,
+              договорённости, сроки» — когда признаков в тексте нет, а по
+              смыслу пост туда относится
+
+Промт проверяется ПОСЛЕДНИМ и только для меток, которые не подошли ни по
+одному механическому правилу: модель — самое дорогое и самое медленное, что
+здесь есть. Один вопрос на пост со всеми промт-метками разом, ответ
+запоминается по содержимому поста (`Judge`), так что перемаркировка не
+спрашивает заново то, что уже спрашивала.
 
 Файл правил один на всех, кто пишет в ленту: мост, перенос из Telegram,
 перемаркировка. Читается и правится плагином dsh. Две копии одной настройки
@@ -28,8 +37,9 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
-RULE_KINDS = ("account", "tag", "contains", "regex")
+RULE_KINDS = ("account", "tag", "contains", "regex", "prompt")
 
 
 
@@ -51,6 +61,24 @@ class Label:
     id: str
     title: str
     rules: tuple[Rule, ...]
+
+    @property
+    def prompts(self) -> tuple[str, ...]:
+        return tuple(r.value for r in self.rules if r.kind == "prompt")
+
+
+class Judge(Protocol):
+    """Модель как судья. Получает пост и кандидатов «id → описание», возвращает
+    id подошедших. Реализация — `bridge.judge.LlmJudge`; в тестах — заглушка."""
+
+    def __call__(self, acct: str, text: str, candidates: dict[str, str]) -> list[str]: ...
+
+
+def needs_judge(labels: list[Label]) -> list[str]:
+    """Метки с промт-правилами. Если такие есть, а судьи нет — это ошибка
+    настройки, и её обязан назвать тот, кто собирает движок: молча
+    пропущенный промт неотличим от «не подошло»."""
+    return [label.id for label in labels if label.prompts]
 
 
 def _rule(raw: dict, label_id: str) -> Rule:
@@ -114,22 +142,46 @@ def _matches(rule: Rule, acct: str, text: str, tags: set[str]) -> bool:
         return rule.value in tags
     if rule.kind == "contains":
         return rule.value.lower() in text.lower()
-    assert rule.pattern is not None
-    return rule.pattern.search(text) is not None
+    if rule.kind == "regex":
+        assert rule.pattern is not None
+        return rule.pattern.search(text) is not None
+    return False  # prompt: решает судья, не здесь
 
 
 def hashtags_in(text: str) -> set[str]:
     return {m.group(1).lower() for m in re.finditer(r"(?<!\w)#(\w+)", text)}
 
 
-def labels_for(labels: list[Label], acct: str, text: str, tags: set[str] | None = None) -> list[str]:
-    """Идентификаторы меток, подошедших посту, в порядке объявления."""
+def labels_for(
+    labels: list[Label], acct: str, text: str, tags: set[str] | None = None,
+    judge: Judge | None = None,
+) -> list[str]:
+    """Идентификаторы меток, подошедших посту, в порядке объявления.
+
+    Сначала механические правила. Потом — один вопрос судье про метки, которые
+    не подошли и имеют промт. Без судьи промт-метки не проверяются вовсе;
+    убедиться, что судья есть, когда он нужен, — обязанность вызывающего
+    (`needs_judge`), а не этой функции: она не знает, где взять модель."""
     acct = acct.split("@")[0].lower()
     tags = {t.lower() for t in (tags if tags is not None else hashtags_in(text))}
-    return [
+    matched = {
         label.id for label in labels
         if any(_matches(rule, acct, text, tags) for rule in label.rules)
-    ]
+    }
+    if judge is not None:
+        candidates = {
+            label.id: "\n".join(label.prompts)
+            for label in labels if label.prompts and label.id not in matched
+        }
+        if candidates:
+            verdict = judge(acct, text, candidates)
+            unknown = set(verdict) - set(candidates)
+            if unknown:
+                # Судья назвал метку, которой не предлагали: это не «не
+                # подошло», это сломанный ответ — и он должен быть виден.
+                raise ValueError(f"судья вернул незнакомые метки: {sorted(unknown)}")
+            matched |= set(verdict)
+    return [label.id for label in labels if label.id in matched]
 
 
 def strip_label_tags(text: str, label_ids: set[str]) -> str:
@@ -142,10 +194,10 @@ def strip_label_tags(text: str, label_ids: set[str]) -> str:
     return re.sub(r"[ \t]*(?<!\w)#(\w+)", drop, text).rstrip()
 
 
-def with_labels(labels: list[Label], acct: str, text: str) -> str:
+def with_labels(labels: list[Label], acct: str, text: str, judge: Judge | None = None) -> str:
     """Текст поста с дописанными метками. Уже стоящие не дублируются;
     если ни одна не подошла — текст возвращается как есть."""
-    wanted = labels_for(labels, acct, text)
+    wanted = labels_for(labels, acct, text, judge=judge)
     present = hashtags_in(text)
     missing = [l for l in wanted if l not in present]
     if not missing:

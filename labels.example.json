@@ -1,18 +1,100 @@
 {
   "labels": [
-    { "id": "разработка", "title": "Разработка",
-      "rules": [ { "account": "openhands" }, { "account": "pr_agent" }, { "account": "issue_agent" }, { "tag": "контур_задача" } ] },
-    { "id": "продукт", "title": "Продукт",
-      "rules": [ { "account": "product_radar" }, { "account": "problemhunt" } ] },
-    { "id": "маркетинг", "title": "Маркетинг",
-      "rules": [ { "contains": "маркетинг" }, { "contains": "продвижен" } ] },
-    { "id": "релизы", "title": "Релизы",
-      "rules": [ { "account": "delivery" }, { "tag": "контур_приёмка" }, { "contains": "релиз" } ] },
-    { "id": "gds", "title": "GDS",
-      "rules": [ { "contains": "GDS" } ] },
-    { "id": "live", "title": "Live",
-      "rules": [ { "contains": "MTS Live" }, { "contains": "МТС Live" }, { "contains": "mts.link" } ] },
-    { "id": "клиенты", "title": "Клиенты",
-      "rules": [ { "account": "tg_aleks" }, { "account": "crm_harness" }, { "contains": "клиент" } ] }
+    {
+      "id": "разработка",
+      "title": "Разработка",
+      "rules": [
+        {
+          "account": "openhands"
+        },
+        {
+          "account": "pr_agent"
+        },
+        {
+          "account": "issue_agent"
+        },
+        {
+          "tag": "контур_задача"
+        }
+      ]
+    },
+    {
+      "id": "продукт",
+      "title": "Продукт",
+      "rules": [
+        {
+          "account": "product_radar"
+        },
+        {
+          "account": "problemhunt"
+        }
+      ]
+    },
+    {
+      "id": "маркетинг",
+      "title": "Маркетинг",
+      "rules": [
+        {
+          "contains": "маркетинг"
+        },
+        {
+          "contains": "продвижен"
+        }
+      ]
+    },
+    {
+      "id": "релизы",
+      "title": "Релизы",
+      "rules": [
+        {
+          "account": "delivery"
+        },
+        {
+          "tag": "контур_приёмка"
+        },
+        {
+          "contains": "релиз"
+        }
+      ]
+    },
+    {
+      "id": "gds",
+      "title": "GDS",
+      "rules": [
+        {
+          "contains": "GDS"
+        }
+      ]
+    },
+    {
+      "id": "live",
+      "title": "Live",
+      "rules": [
+        {
+          "contains": "MTS Live"
+        },
+        {
+          "contains": "mts.link"
+        },
+        {
+          "prompt": "Переписка с партнёром MTS Live: созвоны, договорённости, сроки интеграции — даже если слово «Live» в тексте не встречается"
+        }
+      ]
+    },
+    {
+      "id": "клиенты",
+      "title": "Клиенты",
+      "rules": [
+        {
+          "account": "tg_aleks"
+        },
+        {
+          "account": "crm_harness"
+        },
+        {
+          "contains": "клиент"
+        }
+      ]
+    }
   ]
 }

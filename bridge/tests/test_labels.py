@@ -79,3 +79,73 @@ def test_strip_label_tags_removes_only_labels():
     out = strip_label_tags(text, {"разработка", "клиенты"})
     assert out == "Текст.\n\npoh · #159  #контур_развилка"
     assert hashtags_in(out) == {"159", "контур_развилка"}
+
+
+def test_prompt_rule_asks_judge_only_for_unmatched_labels():
+    """Промт — последним и только там, где механика не сработала: модель самое
+    дорогое, что есть. Один вопрос на пост со всеми кандидатами разом."""
+    asked = []
+
+    def judge(acct, text, candidates):
+        asked.append((acct, dict(candidates)))
+        return ["live"]
+
+    ls = labels(
+        {"id": "разработка", "rules": [{"account": "openhands"}, {"prompt": "про код"}]},
+        {"id": "live", "rules": [{"contains": "MTS Live"}, {"prompt": "переписка с партнёром Live"}]},
+        {"id": "продукт", "rules": [{"account": "product_radar"}]},
+    )
+    out = labels_for(ls, "openhands", "созвон с партнёром про сроки", judge=judge)
+    assert out == ["разработка", "live"]
+    # «разработка» подошла по учётке — про неё не спрашивали; «продукт» без промта.
+    assert asked == [("openhands", {"live": "переписка с партнёром Live"})]
+
+
+def test_prompt_rules_without_judge_are_not_evaluated_and_are_listed():
+    from bridge.labels import needs_judge
+
+    ls = labels({"id": "live", "rules": [{"prompt": "x"}]}, {"id": "a", "rules": [{"contains": "a"}]})
+    assert labels_for(ls, "u", "a") == ["a"]
+    assert needs_judge(ls) == ["live"]
+
+
+def test_judge_naming_unknown_label_is_an_error():
+    ls = labels({"id": "live", "rules": [{"prompt": "x"}]})
+    with pytest.raises(ValueError):
+        labels_for(ls, "u", "текст", judge=lambda a, t, c: ["чужая"])
+
+
+def test_llm_judge_caches_by_content(tmp_path):
+    """Один и тот же вопрос — один поход в модель, и кэш переживает процесс:
+    перемаркировка сотни постов не платит сто раз за одно и то же. Новый
+    промт — новый вопрос."""
+    from bridge.judge import LlmJudge
+
+    cache = tmp_path / "j.json"
+    calls = []
+
+    def stub(acct, text, candidates):
+        calls.append(candidates)
+        return ["live"]
+
+    j = LlmJudge("http://x", "k", "m", cache)
+    j._ask = stub
+    assert j("u", "пост", {"live": "p"}) == ["live"]
+    assert j("u", "пост", {"live": "p"}) == ["live"]
+    assert len(calls) == 1
+
+    again = LlmJudge("http://x", "k", "m", cache)
+    again._ask = stub
+    assert again("u", "пост", {"live": "p"}) == ["live"]
+    assert len(calls) == 1
+    again("u", "пост", {"live": "другой промт"})
+    assert len(calls) == 2
+
+
+def test_parse_verdict_rejects_garbage_loudly():
+    from bridge.judge import JudgeError, parse_verdict
+
+    assert parse_verdict('{"labels": ["live"]}', {"live": "p"}) == ["live"]
+    assert parse_verdict('```json\n{"labels": []}\n```', {"live": "p"}) == []
+    with pytest.raises(JudgeError):
+        parse_verdict("да, подходит", {"live": "p"})

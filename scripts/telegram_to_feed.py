@@ -28,7 +28,8 @@ from pathlib import Path
 
 # Движок меток — общий с мостом, один на всех писателей ленты.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bridge" / "src"))
-from bridge.labels import load_labels, with_labels  # noqa: E402
+from bridge.judge import JudgeError, LlmJudge  # noqa: E402
+from bridge.labels import load_labels, needs_judge, with_labels  # noqa: E402
 
 FEED = os.environ.get("FEED_URL", "http://127.0.0.1:8080")
 BURST_SECONDS = int(os.environ.get("DELAY_BUDGET_SEC", "300"))
@@ -163,6 +164,10 @@ def main():
     # ушли бы без меток молча, а перемаркировать те, что с вложениями,
     # потом нельзя.
     labels = load_labels(LABELS_FILE) if LABELS_FILE else []
+    judge = LlmJudge.from_env(LABELS_FILE.with_name("labels-judgments.json")) if LABELS_FILE else None
+    if needs_judge(labels) and judge is None:
+        sys.exit(f"метки {needs_judge(labels)} требуют модели (правило prompt): задайте "
+                 "LABELS_LLM_BASE_URL, LABELS_LLM_API_KEY, LABELS_LLM_MODEL")
 
     tokens, published, skipped = {}, 0, 0
     for b in bursts(rows):
@@ -181,8 +186,14 @@ def main():
                  "note": f"Telegram · {b['chat_title']}\nПеренесено разделом «Управление коммуникацией»"},
                 method="PATCH")
         when = datetime.fromtimestamp(seconds(b["first_at"]), tz=timezone.utc)
+        try:
+            text = with_labels(labels, user, render(b), judge=judge)
+        except JudgeError as error:
+            # Пост уходит без промт-меток, но вслух: перемаркировка доспросит.
+            print(f"  судья отказал, пачка уходит без промт-меток: {error}", file=sys.stderr)
+            text = with_labels(labels, user, render(b))
         api("/api/v1/statuses", tokens[user], {
-            "status": with_labels(labels, user, render(b)),
+            "status": text,
             "visibility": "public",
             "spoiler_text": "",
             "language": "ru",
