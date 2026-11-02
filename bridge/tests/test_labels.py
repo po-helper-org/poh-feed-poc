@@ -92,7 +92,7 @@ def test_prompt_rule_asks_judge_only_for_unmatched_labels():
 
     ls = labels(
         {"id": "разработка", "rules": [{"account": "openhands"}, {"prompt": "про код"}]},
-        {"id": "live", "rules": [{"contains": "MTS Live"}, {"prompt": "переписка с партнёром Live"}]},
+        {"id": "live", "rules": [{"contains": "PartnerX Live"}, {"prompt": "переписка с партнёром Live"}]},
         {"id": "продукт", "rules": [{"account": "product_radar"}]},
     )
     out = labels_for(ls, "openhands", "созвон с партнёром про сроки", judge=judge)
