@@ -41,7 +41,7 @@ SOURCES = {
     # пустой список честно говорит «источник заявлен, постов нет», а его
     # отсутствие не говорит ничего.
     "Email": [],
-    "MTS.Link": [],
+    "Корпоративный мессенджер": [],
     "AI-Hermes": [],
 }
 
@@ -79,7 +79,7 @@ def main():
         else:
             code, created = call("/api/v1/lists", token, {"title": title})
             if code != 200:
-                print(f"  {title:<12} НЕ СОЗДАН: {created}")
+                print(f"  {title:<24} НЕ СОЗДАН: {created}")
                 continue
             list_id, state = created["id"], "создан"
 
@@ -95,7 +95,7 @@ def main():
             if code == 200:
                 added += 1
         note = f"{len(users)} учёток" if users else "пуст — источник заявлен, постов нет"
-        print(f"  {title:<12} {state}, {note}")
+        print(f"  {title:<24} {state}, {note}")
 
     print("\n== Подписка на теги ==")
     for tag in FOLLOW_TAGS:

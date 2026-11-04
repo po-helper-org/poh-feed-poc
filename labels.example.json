@@ -71,13 +71,13 @@
       "title": "Live",
       "rules": [
         {
-          "contains": "MTS Live"
+          "contains": "PartnerX Live"
         },
         {
-          "contains": "mts.link"
+          "contains": "chat.example.com"
         },
         {
-          "prompt": "Переписка с партнёром MTS Live: созвоны, договорённости, сроки интеграции — даже если слово «Live» в тексте не встречается"
+          "prompt": "Переписка с партнёром PartnerX Live: созвоны, договорённости, сроки интеграции — даже если слово «Live» в тексте не встречается"
         }
       ]
     },
